@@ -267,6 +267,7 @@ struct Bus {
 
 public:
   Bus(Scheduler& scheduler, Hardware&& hw);
+    Bus(Hardware&& hw);
 
   auto GetHostAddress(u32 address, size_t size) -> u8*;
 

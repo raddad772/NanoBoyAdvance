@@ -15,6 +15,9 @@
 
 #include "io.hpp"
 
+extern u32 (*bus_rd_ptr)(u32, u32, int);
+extern void (*bus_wt_ptr)(u32, u32, u32, int);
+
 namespace nba::core {
 
 Bus::Bus(Scheduler& scheduler, Hardware&& hw)
@@ -84,7 +87,12 @@ void Bus::WriteWord(u32 address, u32 value, int access) {
 
 template<typename T>
 auto Bus::Read(u32 address, int access) -> T {
-  auto page = address >> 24;
+    Step(1);
+    if constexpr(std::is_same_v<T, u8>) return bus_rd_ptr(address, 1, access);
+    if constexpr(std::is_same_v<T, u16>) return bus_rd_ptr(address, 2, access);
+    if constexpr(std::is_same_v<T, u32>) return bus_rd_ptr(address, 4, access);
+/*
+    auto page = address >> 24;
   auto is_u32 = std::is_same_v<T, u32>;
 
   // Set last_access to access right before returning.
@@ -181,11 +189,17 @@ auto Bus::Read(u32 address, int access) -> T {
     }
   }  
 
-  return 0;
+  return 0;*/
 }
 
 template<typename T>
 void Bus::Write(u32 address, int access, T value) {
+    if constexpr(std::is_same_v<T, u8>) bus_wt_ptr(address, value, 1, access);
+    if constexpr(std::is_same_v<T, u16>) bus_wt_ptr(address, value, 2, access);
+    if constexpr(std::is_same_v<T, u32>) bus_wt_ptr(address, value, 4, access);
+    Step(1);
+last_access = access;
+/*
   auto page = address >> 24;
   auto is_u32 = std::is_same_v<T, u32>;
 
@@ -281,7 +295,7 @@ void Bus::Write(u32 address, int access, T value) {
     }
   }
 
-  last_access = access;
+  last_access = access;*/
 }
 
 auto Bus::ReadBIOS(u32 address) -> u32 {

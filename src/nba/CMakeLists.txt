@@ -52,6 +52,8 @@ set(SOURCES
   src/hw/timer/timer.cpp
   src/core.cpp
   src/serialization.cpp
+  src/generate_tests.cpp
+  src/myrandom.cpp
 )
 
 set(HEADERS

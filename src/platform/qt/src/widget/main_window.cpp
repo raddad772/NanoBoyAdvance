@@ -25,6 +25,7 @@
 
 #include "widget/main_window.hpp"
 #include "version.hpp"
+#include "../../../../../src/nba/src/generate_tests.h"
 
 MainWindow::MainWindow(
   QApplication* app,
@@ -38,6 +39,7 @@ MainWindow::MainWindow(
       .arg(VERSION_MAJOR).arg(VERSION_MINOR).arg(VERSION_PATCH).arg(VERSION_GIT_BRANCH).arg(VERSION_GIT_HASH);
   #endif
 
+  generate_tests();
   setWindowTitle(base_window_title);
   setAcceptDrops(true);
 

@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <array>
 #include <nba/common/compiler.hpp>
 #include <nba/log.hpp>
@@ -77,6 +78,34 @@ struct ARM7TDMI {
     }
   }
 
+  void SwitchModeOther(u32 new_mode) {
+      switch(new_mode) {
+          case 0x10:
+              SwitchMode(MODE_USR);
+              return;
+          case 0x11:
+              SwitchMode(MODE_FIQ);
+              return;
+          case 0x12:
+              SwitchMode(MODE_IRQ);
+              return;
+          case 0x13:
+              SwitchMode(MODE_SVC);
+              return;
+          case 0x17:
+              SwitchMode(MODE_ABT);
+              return;
+          case 0x1B:
+              SwitchMode(MODE_UND);
+              return;
+          case 0x1F:
+              SwitchMode(MODE_SYS);
+              return;
+          default:
+              assert(1==0);
+      }
+  }
+
   void SwitchMode(Mode new_mode) {
     auto old_bank = GetRegisterBankByMode(state.cpsr.f.mode);
     auto new_bank = GetRegisterBankByMode(new_mode);
@@ -132,7 +161,7 @@ struct ARM7TDMI {
   typedef void (ARM7TDMI::*Handler16)(u16);
   typedef void (ARM7TDMI::*Handler32)(u32);
 
-private:
+public:
   friend struct TableGen;
 
   auto GetReg(int id) -> u32 {
