@@ -1,6 +1,8 @@
 
 include(version.cmake)
 
+set(CMAKE_PREFIX_PATH "/opt/homebrew/Cellar/qt@5/5.15.15_1/lib/cmake")
+
 set(SOURCES
   src/widget/debugger/ppu/background_viewer_window.cpp
   src/widget/debugger/ppu/background_viewer.cpp

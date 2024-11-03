@@ -12,6 +12,24 @@
 #include "myrandom.h"
 #include "generate_private.h"
 
+u32 readbyte(u32 addr, u32 access)
+{
+    printf("\nREAD BYTE %08x %d", addr, access);
+    return 0;
+}
+
+u32 readhalf(u32 addr, u32 access)
+{
+    printf("\nREAD HALF %08x %d", addr, access);
+    return 0;
+}
+
+u32 readword(u32 addr, u32 access)
+{
+    printf("\nREAD WORD %08x %d", addr, access);
+    return 0;
+}
+
 using nba::core::arm::BANK_SVC;
 using nba::core::arm::BANK_NONE;
 using nba::core::arm::BANK_ABT;
@@ -19,7 +37,23 @@ using nba::core::arm::BANK_FIQ;
 using nba::core::arm::BANK_IRQ;
 using nba::core::arm::BANK_UND;
 
-struct armtest *current_test;
+typedef signed long long i64;
+
+struct transaction {
+    enum {
+        TK_READ,
+        TK_WRITE
+    } tkind{};
+    u32 addr{}, val{}, cycle{};
+};
+
+struct generating_test_struct {
+    std::vector<transaction> transactions;
+    armtest *test;
+};
+
+
+static struct generating_test_struct test_struct = {};
 
 u32 bus_read(u32 addr, u32 sz, int access)
 {
@@ -156,18 +190,17 @@ static void field(opc_info &inf, u32 hi_bit, u32 lo_bit)
     inf.bsfs.push_back({mask, lo_bit});
 }
 
-static void fill_opc_info(int num, opc_info &inf)
+static void fill_opc_info(u32 num, opc_info &inf)
 {
     inf.clear();
     using namespace opc::classes;
     switch(num) {
         case DATA_PROCESSING:
             inf.format = 0b11110010000111111111111111111111;
-            inf.name = "data_processing"
+            inf.name = "data_processing";
             /* CMP, CMN, TST and TEQ should have S=1 when is_data_processing - true */
             field(inf,24,21); // opcode
             field(inf,20,20); // S
-
             field(inf,19,16); // Rn
             field(inf,15,12); // Rd
             field(inf,25,25); // I
@@ -182,7 +215,7 @@ static void fill_opc_info(int num, opc_info &inf)
             field(inf, 24, 0); // PUSWL Rn register_list
             break;
         case BRANCH_AND_BRANCHL:
-            inf.name = "branch_andor_link"
+            inf.name = "branch_andor_link";
             inf.format = 0b00001010000000000000000000000000;
             inf.has_cond = true;
             field(inf, 24, 0); // PUSWL Rn register_list
@@ -208,7 +241,7 @@ static void fill_opc_info(int num, opc_info &inf)
             field(inf, 3, 0);
             break;
         case HW_DATA_TRANSFER_REGISTER:
-            inf.nmae = "hw_data_transfer_register";
+            inf.name = "hw_data_transfer_register";
             inf.format = 0b00000000000000000000000010010000;
             inf.has_cond = true;
             field(inf, 24, 23);
@@ -278,7 +311,7 @@ static void fill_opc_info(int num, opc_info &inf)
 
 testarray tests;
 
-opc_info::generate_opcode()
+u32 opc_info::generate_opcode()
 {
     u32 out = format;
     u32 idx = 0;
@@ -288,7 +321,7 @@ opc_info::generate_opcode()
         if ((idx == 1) && (is_data_processing)) {
             // S must be set to 1 for some opcodes
 
-            if ((last >= 8) && (last_v < 12)) {
+            if ((last_v >= 8) && (last_v < 12)) {
                 v = 1;
             }
         }
@@ -299,94 +332,52 @@ opc_info::generate_opcode()
     if (has_cond) {
         u32 v = 15;
         while (v == 15) {
-            v = sfc32(rstate) & 15;
+            v = sfc32(&rstate) & 15;
         }
         out |= (v << 28);
     }
     return out;
 }
 
-static void generate_opc_tests(yo &core, opc_info &inf)
-{
-    sfc32_seed(inf.name);
+static void generate_opc_tests(yo &core, opc_info &inf) {
+    sfc32_seed(inf.name.c_str(), &rstate);
     for (u32 testnum = 0; testnum < NUM_TESTS; testnum++) {
-        armtest &test = &tests.test[testnum];
+        armtest &test = tests.test[testnum];
         test.state_begin.randomize(inf.is_thumb);
-        test.state_begin.copy_to_arm(core.core.cpu);
 
         u32 opcode = inf.generate_opcode();
 
         test.opcodes[0] = opcode;
 
         if (test.is_thumb) {
-            assert(1==0);
-        }
-        else {
+            assert(1 == 0);
+        } else {
             test.opcodes[1] = ARM32_ADC_R1_R2; // first opcode after test
             test.opcodes[2] = ARM32_ADC_R2_R3; // branch taken to correct
             test.opcodes[3] = ARM32_ADC_R3_R4; // branch taken incorrect
             test.opcodes[4] = ARM32_ADC_R8_R9; // 
         }
-        copy_state_to_cpu(&tst->initial, &t->cpu);
+        test.state_begin.pipeline.opcode[0] = test.opcodes[0];
+        test.state_begin.pipeline.opcode[1] = test.opcodes[1];
+        test.state_begin.copy_to_arm(core.core.cpu);
 
         // Make sure our CPU isn't interrupted...
-        //t->cpu.interrupt_highest_priority = 0;
-        SH4IInterpreter::trace_cycles = 0;
-        SH4IInterpreter::cycles_left = 0;
+        core.core.cpu.trace_cycles = 0;
+        core.core.cpu.cycles_left = 0;
 
         // Zero our test struct
-        test_struct.test = tst;
-        test_struct.read_num = 0;
-        test_struct.write_addr = test_struct.write_size = -1;
-        test_struct.write_value = -1;
-        test_struct.write_cycle = 50;
-        test_struct.ifetch_num = 0;
-        for (u32 j = 0; j < 7; j++) {
-            if (j < 4) {
-                test_struct.ifetch_addr[j] = -1;
-                test_struct.ifetch_data[j] = 65536;
-
-            }
-            test_struct.read_addrs[j] = -1;
-            test_struct.read_sizes[j] = -1;
-            test_struct.read_values[j] = 0;
-            test_struct.read_cycles[j] = 50;
-        }
+        test_struct.transactions.clear();
+        test_struct.test = &test;
 
         // Run CPU 4 cycles
-        // Our amazeballs CPU can run 2-for-1 so do it special!
-        // ONLY opcode 1 could have a delay slot so all should finish
-        t->cpu.Loop();
-        assert(SH4IInterpreter::trace_cycles == 4);
-        assert(SH4IInterpreter::cycles_left == 0);
 
-        for (u32 cycle = 0; cycle < 4; cycle++) {
-            struct test_cycle *c = &tst->cycles[cycle];
-            clear_test_cycle(c);
-            if ((cycle == 1)  && (test_struct.write_cycle != 50)) {
-                c->actions |= TCA_WRITE;
-                c->write_addr = test_struct.write_addr;
-                c->write_val = test_struct.write_value;
-            }
-            for (u32 j = 0; j < 7; j++) {
-                if ((test_struct.read_cycles[j] != 50) && (cycle == 1)) {
-                    assert((c->actions & TCA_READ) == 0);
-                    c->actions |= TCA_READ;
-                    c->read_addr = test_struct.read_addrs[j];
-                    c->read_val = test_struct.read_values[j];
-                }
-            }
-            c->actions |= TCA_FETCHINS;
-            c->fetch_addr = test_struct.ifetch_addr[cycle];
-            c->fetch_val = test_struct.ifetch_data[cycle];
-            assert(c->fetch_addr <= 0xFFFFFFFF);
-            assert(c->fetch_addr >= 0);
-            assert(c->fetch_val <= 0xFFFF);
-        }
+        assert(core.core.cpu.trace_cycles == 4);
+        assert(core.core.cpu.cycles_left == 0);
+
         // Now fill out rest of test
-        copy_state_from_cpu(&tst->final, &t->cpu);
+        test.state_end.copy_from_arm(core.core.cpu);
     }
-    write_tests(ta);
+    //write_tests(ta);
 }
 
 
@@ -394,10 +385,13 @@ void generate_tests()
 {
     auto conf = std::make_shared<nba::Config>();
     yo core(conf);
+    core.core.cpu.readbyte = &readbyte;
+    core.core.cpu.readhalf = &readhalf;
+    core.core.cpu.readword = &readword;
 
-    snprintf(tests.outpath, 500, "/Users/dave/dev/ARM7TDMI/v1/%s.json.bin", gti.name);
+    //snprintf(tests.outpath, 500, "/Users/dave/dev/ARM7TDMI/v1/%s.json.bin", gti.name);
     fflush(stdout);
-    for (u32 opc_num = 0; opc_num < opc::total; opc_num++) {
+    for (u32 opc_num = 1; opc_num < opc::total; opc_num++) {
         opc_info inf;
         fill_opc_info(opc_num, inf);
         printf("\nGenerate tests %s", inf.name.c_str());

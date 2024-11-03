@@ -19,8 +19,13 @@
 
 namespace nba::core::arm {
 
+typedef u32 (*rcallback)(u32, u32);
+typedef void (*wcallback)(u32, u32, u32);
+
 struct ARM7TDMI {
   using Access = Bus::Access;
+
+  u32 trace_cycles, cycles_left;
 
   ARM7TDMI(Scheduler& scheduler, Bus& bus)
       : scheduler(scheduler)
@@ -291,6 +296,9 @@ public:
   void ClearLDMUsermodeConflictFlag() {
     ldm_usermode_conflict = false;
   }
+
+  rcallback readbyte, readhalf, readword;
+  wcallback writebyte, writehalf, writeword;
 
   #include "handlers/arithmetic.inl"
   #include "handlers/handler16.inl"

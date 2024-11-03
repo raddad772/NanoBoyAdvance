@@ -6,6 +6,12 @@
 #define NANOBOYADVANCE_GENERATE_PRIVATE_H
 
 #define ARM32_NOP 0xe1a00000  // mov r0, r0
+// 0b000000001010 op1 op2 00000110 op3
+#define ARM32_ADC(op1, op2, op3) (0b00000000101000000000000001100000 | (op1 << 16) | (op2 << 12) | op3)
+#define ARM32_ADC_R1_R2 ARM32_ADC(1, 2, 2)
+#define ARM32_ADC_R2_R3 ARM32_ADC(2, 3, 3)
+#define ARM32_ADC_R3_R4 ARM32_ADC(3, 4, 4)
+#define ARM32_ADC_R8_R9 ARM32_ADC(8, 9, 9)
 #define THUMB_NOP 0x46c0      // mov r8, r8
 #include <string.h>
 
@@ -74,6 +80,7 @@ struct opc_info {
     bool has_cond;
     bool is_data_processing;
     bool is_thumb;
+    bool has_shifter;
     std::vector<bsf> bsfs;
 
     void clear() { is_thumb = false; is_data_processing = false; format = 0; mask = 0; has_cond = has_shifter = false; num = opc::classes::NONE,  bsfs.clear(); }
@@ -85,7 +92,7 @@ struct armtest {
     std::vector<RW> writes;
     arm_test_state state_begin, state_end;
     bool is_thumb;
-    u32 opcodes;
+    u32 opcodes[5];
 
 };
 
