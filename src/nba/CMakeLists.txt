@@ -119,7 +119,8 @@ set(HEADERS_PUBLIC
   include/nba/scheduler.hpp
 )
 
-add_library(nba STATIC)
+add_library(nba STATIC
+        src/hw/mpwd.h)
 target_sources(nba PRIVATE ${SOURCES} ${HEADERS} ${HEADERS_PUBLIC})
 target_include_directories(nba PRIVATE src PUBLIC include)
 

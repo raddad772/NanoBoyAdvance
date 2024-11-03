@@ -297,9 +297,6 @@ public:
     ldm_usermode_conflict = false;
   }
 
-  rcallback readbyte, readhalf, readword;
-  wcallback writebyte, writehalf, writeword;
-
   #include "handlers/arithmetic.inl"
   #include "handlers/handler16.inl"
   #include "handlers/handler32.inl"

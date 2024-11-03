@@ -15,7 +15,7 @@
 #define THUMB_NOP 0x46c0      // mov r8, r8
 #include <string.h>
 
-#define NUM_TESTS 5000
+#define NUM_TESTS 20000
 #define ALLOC_BUF_SIZE (10 * 1024 * 1024)
 
 struct RW {
@@ -38,6 +38,7 @@ struct arm_test_state {
     struct {
         u32 opcode[2];
     } pipeline;
+    void print(const char *w);
     void randomize(bool thumb);
     void copy_to_arm(nba::core::arm::ARM7TDMI &cpu);
     void copy_from_arm(nba::core::arm::ARM7TDMI &cpu);
@@ -87,13 +88,21 @@ struct opc_info {
     u32 generate_opcode();
 };
 
+struct transaction {
+    enum {
+        TK_READ_INS,
+        TK_READ_DATA,
+        TK_WRITE_DATA
+    } tkind{};
+    u32 addr{}, data{}, cycle{}, size{};
+};
+
 struct armtest {
-    std::vector<RW> reads;
-    std::vector<RW> writes;
+    std::vector<transaction> transactions;
     arm_test_state state_begin, state_end;
     bool is_thumb;
     u32 opcodes[5];
-
+    u32 base_addr;
 };
 
 enum ARM_modes {

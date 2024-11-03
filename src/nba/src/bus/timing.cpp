@@ -116,8 +116,11 @@ void Bus::StopPrefetch() {
   }
 }
 
+extern u32 global_steps;
+
 void Bus::Step(int cycles) {
   scheduler.AddCycles(cycles);
+  global_steps += cycles;
 
   if(prefetch.active) {
     prefetch.countdown -= cycles;
