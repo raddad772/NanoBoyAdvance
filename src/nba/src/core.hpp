@@ -44,8 +44,7 @@ struct Core final : CoreBase {
   auto GetBGVOFS(int id) -> u16 override;
 
   Scheduler& GetScheduler() override;
-
-private:
+  
   void SkipBootScreen();
   auto SearchSoundMainRAM() -> u32;
 

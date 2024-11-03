@@ -7,11 +7,17 @@
 
 #define ARM32_NOP 0xe1a00000  // mov r0, r0
 #define THUMB_NOP 0x46c0      // mov r8, r8
+#include <string.h>
+
+#define NUM_TESTS 5000
+#define ALLOC_BUF_SIZE (10 * 1024 * 1024)
 
 struct RW {
     u32 addr;
     u32 val;
     u32 cycle_num;
+    int access;
+    u32 sz;
 };
 
 struct arm_test_state {
@@ -31,11 +37,56 @@ struct arm_test_state {
     void copy_from_arm(nba::core::arm::ARM7TDMI &cpu);
 };
 
+namespace opc{
+    namespace classes {
+        enum kinds {
+            NONE = 0,
+            BX,
+            BLOCK_DATA_TRANSFER,
+            BRANCH_AND_BRANCHL,
+            SWI,
+            UNDEFINED,
+            SINGLE_DATA_TRANSFER,
+            SINGLE_DATA_SWAP,
+            MUL,
+            MULL,
+            HW_DATA_TRANSFER_REGISTER,
+            HW_DATA_TRANSFER_IMM,
+            MRS,
+            MSR_TO_PSR,
+            MSR_FLAG_ONLY,
+            DATA_PROCESSING
+        };
+    };
+    static const int total = 12;
+};
+
+struct bsf {
+    u32 mask;
+    u32 shift;
+};
+
+struct opc_info {
+    opc::classes::kinds num;
+    u32 mask;
+    u32 format;
+    std::string name;
+    bool has_cond;
+    bool is_data_processing;
+    bool is_thumb;
+    std::vector<bsf> bsfs;
+
+    void clear() { is_thumb = false; is_data_processing = false; format = 0; mask = 0; has_cond = has_shifter = false; num = opc::classes::NONE,  bsfs.clear(); }
+    u32 generate_opcode();
+};
 
 struct armtest {
     std::vector<RW> reads;
     std::vector<RW> writes;
     arm_test_state state_begin, state_end;
+    bool is_thumb;
+    u32 opcodes;
+
 };
 
 enum ARM_modes {
@@ -49,5 +100,10 @@ enum ARM_modes {
     mode_sys = 0b11111
 };
 
+struct testarray {
+    u8 *buf;
+    char outpath[500];
+    armtest test[NUM_TESTS];
+};
 
 #endif //NANOBOYADVANCE_GENERATE_PRIVATE_H

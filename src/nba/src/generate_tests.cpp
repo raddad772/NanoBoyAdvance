@@ -113,14 +113,14 @@ void arm_test_state::copy_to_arm(nba::core::arm::ARM7TDMI &cpu)
 
 void arm_test_state::copy_from_arm(nba::core::arm::ARM7TDMI &cpu)
 {
-    CPSR = cpu.state.cpsr;
+    CPSR = cpu.state.cpsr.v;
     cpu.SwitchMode(nba::core::arm::Mode::MODE_USR);
 
-    SPSR_svc = cpu.state.spsr[BANK_SVC];
-    SPSR_abt = cpu.state.spsr[BANK_ABT];
-    SPSR_irq = cpu.state.spsr[BANK_IRQ];
-    SPSR_und = cpu.state.spsr[BANK_UND];
-    SPSR_fiq = cpu.state.spsr[BANK_FIQ];
+    SPSR_svc = cpu.state.spsr[BANK_SVC].v;
+    SPSR_abt = cpu.state.spsr[BANK_ABT].v;
+    SPSR_irq = cpu.state.spsr[BANK_IRQ].v;
+    SPSR_und = cpu.state.spsr[BANK_UND].v;
+    SPSR_fiq = cpu.state.spsr[BANK_FIQ].v;
     pipeline.opcode[0] = cpu.pipe.opcode[0];
     pipeline.opcode[1] = cpu.pipe.opcode[1];
 
@@ -145,11 +145,263 @@ struct yo {
     nba::core::Core core;
 };
 
+static void field(opc_info &inf, u32 hi_bit, u32 lo_bit)
+{
+    u32 num_bits = (hi_bit - lo_bit) + 1;
+    // 4, 2
+    // 4 - 2 = 2 + 1 = 3
+    // <<shl by lo_bit
+    // 1 << 3 = 8. - 1 = 7. so mask is (1 << numbits) - 1
+    u32 mask = (1 << num_bits) - 1;
+    inf.bsfs.push_back({mask, lo_bit});
+}
+
+static void fill_opc_info(int num, opc_info &inf)
+{
+    inf.clear();
+    using namespace opc::classes;
+    switch(num) {
+        case DATA_PROCESSING:
+            inf.format = 0b11110010000111111111111111111111;
+            inf.name = "data_processing"
+            /* CMP, CMN, TST and TEQ should have S=1 when is_data_processing - true */
+            field(inf,24,21); // opcode
+            field(inf,20,20); // S
+
+            field(inf,19,16); // Rn
+            field(inf,15,12); // Rd
+            field(inf,25,25); // I
+            inf.has_cond = true;
+            inf.has_shifter = true;
+            inf.is_data_processing = true;
+            break;
+        case BLOCK_DATA_TRANSFER:
+            inf.name = "block_data_transfer";
+            inf.format = 0b00001000000000000000000000000000;
+            inf.has_cond = true;
+            field(inf, 24, 0); // PUSWL Rn register_list
+            break;
+        case BRANCH_AND_BRANCHL:
+            inf.name = "branch_andor_link"
+            inf.format = 0b00001010000000000000000000000000;
+            inf.has_cond = true;
+            field(inf, 24, 0); // PUSWL Rn register_list
+            break;
+        case BX:
+            inf.name = "branch_exchange";
+            inf.format = 0b00000001001011111111111100010000;
+            inf.has_cond = true;
+            field(inf, 3, 0); // Rn
+            break;
+        case MUL:
+            inf.name = "mul";
+            inf.format = 0b00000000000000000000000010010000;
+            inf.has_cond = true;
+            field(inf, 21, 8);
+            field(inf, 3, 0);
+            break;
+        case MULL:
+            inf.name = "mull";
+            inf.format = 0b00000000100000000000000010010000;
+            inf.has_cond = true;
+            field(inf, 22, 8);
+            field(inf, 3, 0);
+            break;
+        case HW_DATA_TRANSFER_REGISTER:
+            inf.nmae = "hw_data_transfer_register";
+            inf.format = 0b00000000000000000000000010010000;
+            inf.has_cond = true;
+            field(inf, 24, 23);
+            field(inf, 21, 12);
+            field(inf, 6, 5);
+            field(inf, 3, 0);
+            break;
+        case HW_DATA_TRANSFER_IMM:
+            inf.name = "hw_data_transfer_immediate";
+            inf.format = 0b00000000010000000000000010010000;
+            inf.has_cond = true;
+            field(inf, 24, 23);
+            field(inf, 21, 7);
+            field(inf, 5, 5);
+            field(inf, 3, 0);
+            break;
+        case MRS:
+            inf.name = "mrs";
+            inf.format = 0b00000001000011110000000000000000;
+            inf.has_cond = true;
+            field(inf, 22, 22);
+            field(inf, 15, 12);
+            break;
+        case MSR_TO_PSR:
+            inf.name = "msr_to_psr";
+            inf.format = (0b00000001 << 24) | (0b00101001 << 16) | (0b11110000 << 8) | 0b00000000;
+            inf.has_cond = true;
+            field(inf, 22, 22);
+            field(inf, 3, 0);
+            break;
+        case MSR_FLAG_ONLY:
+            inf.name = "msr_to_psr_flags_only";
+            inf.format = 0b00000001001010001111000000000000;
+            inf.has_cond = true;
+            field(inf, 25, 25);
+            field(inf, 22, 22);
+            field(inf, 11, 0);
+            break;
+        case SINGLE_DATA_TRANSFER:
+            inf.name = "single_data_transfer";
+            inf.format = 0b00000100000000000000000000000000;
+            inf.has_cond = true;
+            field(inf, 25, 0);
+            break;
+        case SINGLE_DATA_SWAP:
+            inf.name = "single_data_swap";
+            inf.format = 0b00000001000000000000000010010000;
+            inf.has_cond = true;
+            field(inf, 22, 22); // B
+            field(inf, 19, 12); // Rn, Rd
+            field(inf, 3, 0); // Rm
+            break;
+        case SWI:
+            inf.name = "swi";
+            inf.format = 0b00001111000000000000000000000000;
+            inf.has_cond = true;
+            break;
+        case UNDEFINED:
+            inf.name = "undefined";
+            inf.format = 0b00000110000000000000000000010000;
+            field(inf, 24, 0); // PUSWL Rn register_list
+            break;
+        default:
+            assert(1==0);
+    }
+}
+
+testarray tests;
+
+opc_info::generate_opcode()
+{
+    u32 out = format;
+    u32 idx = 0;
+    u32 last_v = 0;
+    for (auto &bf : bsfs) {
+        u32 v = sfc32(&rstate) & bf.mask;
+        if ((idx == 1) && (is_data_processing)) {
+            // S must be set to 1 for some opcodes
+
+            if ((last >= 8) && (last_v < 12)) {
+                v = 1;
+            }
+        }
+        out |= v << bf.shift;
+        last_v = v;
+        idx++;
+    }
+    if (has_cond) {
+        u32 v = 15;
+        while (v == 15) {
+            v = sfc32(rstate) & 15;
+        }
+        out |= (v << 28);
+    }
+    return out;
+}
+
+static void generate_opc_tests(yo &core, opc_info &inf)
+{
+    sfc32_seed(inf.name);
+    for (u32 testnum = 0; testnum < NUM_TESTS; testnum++) {
+        armtest &test = &tests.test[testnum];
+        test.state_begin.randomize(inf.is_thumb);
+        test.state_begin.copy_to_arm(core.core.cpu);
+
+        u32 opcode = inf.generate_opcode();
+
+        test.opcodes[0] = opcode;
+
+        if (test.is_thumb) {
+            assert(1==0);
+        }
+        else {
+            test.opcodes[1] = ARM32_ADC_R1_R2; // first opcode after test
+            test.opcodes[2] = ARM32_ADC_R2_R3; // branch taken to correct
+            test.opcodes[3] = ARM32_ADC_R3_R4; // branch taken incorrect
+            test.opcodes[4] = ARM32_ADC_R8_R9; // 
+        }
+        copy_state_to_cpu(&tst->initial, &t->cpu);
+
+        // Make sure our CPU isn't interrupted...
+        //t->cpu.interrupt_highest_priority = 0;
+        SH4IInterpreter::trace_cycles = 0;
+        SH4IInterpreter::cycles_left = 0;
+
+        // Zero our test struct
+        test_struct.test = tst;
+        test_struct.read_num = 0;
+        test_struct.write_addr = test_struct.write_size = -1;
+        test_struct.write_value = -1;
+        test_struct.write_cycle = 50;
+        test_struct.ifetch_num = 0;
+        for (u32 j = 0; j < 7; j++) {
+            if (j < 4) {
+                test_struct.ifetch_addr[j] = -1;
+                test_struct.ifetch_data[j] = 65536;
+
+            }
+            test_struct.read_addrs[j] = -1;
+            test_struct.read_sizes[j] = -1;
+            test_struct.read_values[j] = 0;
+            test_struct.read_cycles[j] = 50;
+        }
+
+        // Run CPU 4 cycles
+        // Our amazeballs CPU can run 2-for-1 so do it special!
+        // ONLY opcode 1 could have a delay slot so all should finish
+        t->cpu.Loop();
+        assert(SH4IInterpreter::trace_cycles == 4);
+        assert(SH4IInterpreter::cycles_left == 0);
+
+        for (u32 cycle = 0; cycle < 4; cycle++) {
+            struct test_cycle *c = &tst->cycles[cycle];
+            clear_test_cycle(c);
+            if ((cycle == 1)  && (test_struct.write_cycle != 50)) {
+                c->actions |= TCA_WRITE;
+                c->write_addr = test_struct.write_addr;
+                c->write_val = test_struct.write_value;
+            }
+            for (u32 j = 0; j < 7; j++) {
+                if ((test_struct.read_cycles[j] != 50) && (cycle == 1)) {
+                    assert((c->actions & TCA_READ) == 0);
+                    c->actions |= TCA_READ;
+                    c->read_addr = test_struct.read_addrs[j];
+                    c->read_val = test_struct.read_values[j];
+                }
+            }
+            c->actions |= TCA_FETCHINS;
+            c->fetch_addr = test_struct.ifetch_addr[cycle];
+            c->fetch_val = test_struct.ifetch_data[cycle];
+            assert(c->fetch_addr <= 0xFFFFFFFF);
+            assert(c->fetch_addr >= 0);
+            assert(c->fetch_val <= 0xFFFF);
+        }
+        // Now fill out rest of test
+        copy_state_from_cpu(&tst->final, &t->cpu);
+    }
+    write_tests(ta);
+}
+
+
 void generate_tests()
 {
-    printf("\nGENERATE ME UP!");
     auto conf = std::make_shared<nba::Config>();
     yo core(conf);
 
+    snprintf(tests.outpath, 500, "/Users/dave/dev/ARM7TDMI/v1/%s.json.bin", gti.name);
+    fflush(stdout);
+    for (u32 opc_num = 0; opc_num < opc::total; opc_num++) {
+        opc_info inf;
+        fill_opc_info(opc_num, inf);
+        printf("\nGenerate tests %s", inf.name.c_str());
+        generate_opc_tests(core, inf);
+    }
     //sfc32_seed(ta->fname, &rstate);
 }
