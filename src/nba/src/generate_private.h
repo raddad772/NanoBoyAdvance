@@ -7,7 +7,7 @@
 
 #define ARM32_NOP 0xe1a00000  // mov r0, r0
 // 0b000000001010 op1 op2 00000110 op3
-#define ARM32_ADC(op1, op2, op3) (0b00000000101000000000000001100000 | (op1 << 16) | (op2 << 12) | op3)
+#define ARM32_ADC(op1, op2, op3) (0b00000000101000000000000000000000 | (op1 << 16) | (op2 << 12) | op3)
 #define ARM32_ADC_R1_R2 ARM32_ADC(1, 2, 2)
 #define ARM32_ADC_R2_R3 ARM32_ADC(2, 3, 3)
 #define ARM32_ADC_R3_R4 ARM32_ADC(3, 4, 4)
@@ -15,7 +15,7 @@
 #define THUMB_NOP 0x46c0      // mov r8, r8
 #include <string.h>
 
-#define NUM_TESTS 20000
+#define NUM_TESTS 2000
 #define ALLOC_BUF_SIZE (10 * 1024 * 1024)
 
 struct RW {
@@ -34,7 +34,7 @@ struct arm_test_state {
     u32 r_irq[2];
     u32 r_und[2];
     u32 CPSR;
-    u32 SPSR, SPSR_fiq, SPSR_svc, SPSR_abt, SPSR_irq, SPSR_und;
+    u32 SPSR_fiq, SPSR_svc, SPSR_abt, SPSR_irq, SPSR_und;
     struct {
         u32 opcode[2];
     } pipeline;
@@ -48,29 +48,38 @@ namespace opc{
     namespace classes {
         enum kinds {
             NONE = 0,
-            BX,
-            BLOCK_DATA_TRANSFER,
-            BRANCH_AND_BRANCHL,
-            SWI,
-            UNDEFINED,
-            SINGLE_DATA_TRANSFER,
-            SINGLE_DATA_SWAP,
-            MUL,
-            MULL,
-            HW_DATA_TRANSFER_REGISTER,
-            HW_DATA_TRANSFER_IMM,
+            MUL_MLA,
+            MULL_MLAL,
+            SWP,
+            LDRH_STRH,
+            LDRSB_LDRSH,
             MRS,
-            MSR_TO_PSR,
-            MSR_FLAG_ONLY,
-            DATA_PROCESSING
+            MSR_reg,
+            MSR_imm,
+            BX,
+            data_proc_immediate_shift,
+            data_proc_register_shift,
+            data_processing_immediate,
+            LDR_STR_immediate_offset,
+            LDR_STR_register_offset,
+            LDM_STM,
+            B_BL,
+            STC_LDC,
+            CDP,
+            MCR_MRC,
+            SWI,
         };
     };
-    static const int total = 12;
+    static const int total = 20;
 };
 
 struct bsf {
     u32 mask;
     u32 shift;
+    bool is_if;
+    bool is_ne;
+    u32 which_mask;
+    u32 which_equals;
 };
 
 struct opc_info {
@@ -94,7 +103,7 @@ struct transaction {
         TK_READ_DATA,
         TK_WRITE_DATA
     } tkind{};
-    u32 addr{}, data{}, cycle{}, size{};
+    u32 addr{}, data{}, cycle{}, size{}, access{};
 };
 
 struct armtest {

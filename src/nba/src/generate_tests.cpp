@@ -78,7 +78,7 @@ u32 bus_read(u32 addr, u32 sz, int access)
         else {
             // out-of-order!
             //printf("\nOUT OF ORDER FETCH!");
-            v = tst->opcodes[2];
+            v = tst->opcodes[3];
         }
     } else {
         // Generate an 8, 16, or 32-bit value!
@@ -102,6 +102,7 @@ u32 bus_read(u32 addr, u32 sz, int access)
     }
 
     t.data = v;
+    t.access = access;
 
     test_struct.test->transactions.push_back(t);
 
@@ -117,6 +118,7 @@ void bus_write(u32 addr, u32 val, u32 sz, int access)
     t.size = sz;
     t.tkind = transaction::TK_WRITE_DATA;
     t.cycle = global_steps;
+    t.access = access;
     test_struct.test->transactions.push_back(t);
 }
 
@@ -163,8 +165,7 @@ void arm_test_state::randomize(bool thumb) {
     // 5, T. Thumb!
     // 4-0 = mode. must be valid from list of modes above
     CPSR = get_cpsr(thumb);
-    SPSR = get_cpsr(thumb);
-    SPSR = get_cpsr(thumb);
+    //SPSR = get_cpsr(thumb);
     SPSR_fiq = get_cpsr(thumb);
     SPSR_svc = get_cpsr(thumb);
     SPSR_abt = get_cpsr(thumb);
@@ -183,7 +184,8 @@ void arm_test_state::randomize(bool thumb) {
 void arm_test_state::copy_to_arm(nba::core::arm::ARM7TDMI &cpu)
 {
     cpu.Reset();
-    cpu.SwitchMode(nba::core::arm::Mode::MODE_USR);
+    if (cpu.state.cpsr.f.mode != nba::core::arm::Mode::MODE_USR)
+        cpu.SwitchMode(nba::core::arm::Mode::MODE_USR);
     for (u32 i = 0; i < 16; i++) {
         cpu.state.reg[i] = r[i];
         if (i < 2) { // 5 and 6
@@ -196,23 +198,24 @@ void arm_test_state::copy_to_arm(nba::core::arm::ARM7TDMI &cpu)
             cpu.state.bank[BANK_FIQ][i] = r_fiq[i];
         }
     }
-    cpu.state.spsr[BANK_SVC] = SPSR_svc;
-    cpu.state.spsr[BANK_ABT] = SPSR_abt;
-    cpu.state.spsr[BANK_IRQ] = SPSR_irq;
-    cpu.state.spsr[BANK_UND] = SPSR_und;
-    cpu.state.spsr[BANK_FIQ] = SPSR_fiq;
+    cpu.state.spsr[BANK_SVC].v = SPSR_svc;
+    cpu.state.spsr[BANK_ABT].v = SPSR_abt;
+    cpu.state.spsr[BANK_IRQ].v = SPSR_irq;
+    cpu.state.spsr[BANK_UND].v = SPSR_und;
+    cpu.state.spsr[BANK_FIQ].v = SPSR_fiq;
     cpu.pipe.opcode[0] = pipeline.opcode[0];
     cpu.pipe.opcode[1] = pipeline.opcode[1];
-    cpu.state.cpsr = CPSR;
-    cpu.SwitchModeOther((nba::core::arm::Mode)CPSR & 0x1F);
+    cpu.state.cpsr.v = CPSR;
+    if ((CPSR & 0x1F) != 16)
+        cpu.SwitchModeOther((nba::core::arm::Mode)CPSR & 0x1F);
 }
 
 void arm_test_state::copy_from_arm(nba::core::arm::ARM7TDMI &cpu)
 {
     CPSR = cpu.state.cpsr.v;
-    cpu.SwitchMode(nba::core::arm::Mode::MODE_USR);
+    if (cpu.state.cpsr.f.mode != nba::core::arm::Mode::MODE_USR)
+        cpu.SwitchMode(nba::core::arm::Mode::MODE_USR);
 
-    SPSR = cpu.state.spsr[BANK_NONE].v;
     SPSR_svc = cpu.state.spsr[BANK_SVC].v;
     SPSR_abt = cpu.state.spsr[BANK_ABT].v;
     SPSR_irq = cpu.state.spsr[BANK_IRQ].v;
@@ -245,12 +248,28 @@ struct yo {
 static void field(opc_info &inf, u32 hi_bit, u32 lo_bit)
 {
     u32 num_bits = (hi_bit - lo_bit) + 1;
-    // 4, 2
-    // 4 - 2 = 2 + 1 = 3
-    // <<shl by lo_bit
-    // 1 << 3 = 8. - 1 = 7. so mask is (1 << numbits) - 1
     u32 mask = (1 << num_bits) - 1;
-    inf.bsfs.push_back({mask, lo_bit});
+    inf.bsfs.push_back({mask, lo_bit, false, false, 0, 0});
+}
+
+static void field_when(opc_info &inf, u32 which_hi, u32 which_lo, u32 equals, u32 hi_bit, u32 lo_bit)
+{
+    u32 num_bits = (hi_bit - lo_bit) + 1;
+    u32 mask = (1 << num_bits) - 1;
+
+    u32 which_mask = (1 << ((which_hi - which_lo) + 1)) - 1;
+    u32 which_equals = equals << which_lo;
+    inf.bsfs.push_back({mask, lo_bit, true, true, which_mask, which_equals});
+}
+
+static void field_when_not(opc_info &inf, u32 which_hi, u32 which_lo, u32 equals, u32 hi_bit, u32 lo_bit)
+{
+    u32 num_bits = (hi_bit - lo_bit) + 1;
+    u32 mask = (1 << num_bits) - 1;
+
+    u32 which_mask = (1 << ((which_hi - which_lo) + 1)) - 1;
+    u32 which_equals = equals << which_lo;
+    inf.bsfs.push_back({mask, lo_bit, true, false, which_mask, which_equals});
 }
 
 static void fill_opc_info(u32 num, opc_info &inf)
@@ -258,114 +277,165 @@ static void fill_opc_info(u32 num, opc_info &inf)
     inf.clear();
     using namespace opc::classes;
     switch(num) {
-        case DATA_PROCESSING:
-            inf.format = 0b11110010000111111111111111111111;
-            inf.name = "data_processing";
-            /* CMP, CMN, TST and TEQ should have S=1 when is_data_processing - true */
-            field(inf,24,21); // opcode
-            field(inf,20,20); // S
-            field(inf,19,16); // Rn
-            field(inf,15,12); // Rd
-            field(inf,25,25); // I
-            inf.has_cond = true;
-            inf.has_shifter = true;
-            inf.is_data_processing = true;
-            break;
-        case BLOCK_DATA_TRANSFER:
-            inf.name = "block_data_transfer";
-            inf.format = 0b00001000000000000000000000000000;
-            inf.has_cond = true;
-            field(inf, 24, 0); // PUSWL Rn register_list
-            break;
-        case BRANCH_AND_BRANCHL:
-            inf.name = "branch_andor_link";
-            inf.format = 0b00001010000000000000000000000000;
-            inf.has_cond = true;
-            field(inf, 24, 0); // PUSWL Rn register_list
-            break;
-        case BX:
-            inf.name = "branch_exchange";
-            inf.format = 0b00000001001011111111111100010000;
-            inf.has_cond = true;
-            field(inf, 3, 0); // Rn
-            break;
-        case MUL:
-            inf.name = "mul";
+        case MUL_MLA: // // 000'000.. 1001  MUL, MLA
+            inf.name = "mul_mla";
             inf.format = 0b00000000000000000000000010010000;
             inf.has_cond = true;
-            field(inf, 21, 8);
-            field(inf, 3, 0);
+            field(inf, 21,8); // S, Rd, Rn, Rs
+            field(inf, 3, 0); // Rm
             break;
-        case MULL:
-            inf.name = "mull";
+        case MULL_MLAL:
+            inf.name = "mull_mlal";
             inf.format = 0b00000000100000000000000010010000;
             inf.has_cond = true;
-            field(inf, 22, 8);
-            field(inf, 3, 0);
+            field(inf, 21,8); // S, Rd, Rn, Rs
+            field(inf, 3, 0); // Rm
             break;
-        case HW_DATA_TRANSFER_REGISTER:
-            inf.name = "hw_data_transfer_register";
-            inf.format = 0b00000000000000000000000010010000;
-            inf.has_cond = true;
-            field(inf, 24, 23);
-            field(inf, 21, 12);
-            field(inf, 6, 5);
-            field(inf, 3, 0);
-            break;
-        case HW_DATA_TRANSFER_IMM:
-            inf.name = "hw_data_transfer_immediate";
-            inf.format = 0b00000000010000000000000010010000;
-            inf.has_cond = true;
-            field(inf, 24, 23);
-            field(inf, 21, 7);
-            field(inf, 5, 5);
-            field(inf, 3, 0);
-            break;
-        case MRS:
-            inf.name = "mrs";
-            inf.format = 0b00000001000011110000000000000000;
-            inf.has_cond = true;
-            field(inf, 22, 22);
-            field(inf, 15, 12);
-            break;
-        case MSR_TO_PSR:
-            inf.name = "msr_to_psr";
-            inf.format = (0b00000001 << 24) | (0b00101001 << 16) | (0b11110000 << 8) | 0b00000000;
-            inf.has_cond = true;
-            field(inf, 22, 22);
-            field(inf, 3, 0);
-            break;
-        case MSR_FLAG_ONLY:
-            inf.name = "msr_to_psr_flags_only";
-            inf.format = 0b00000001001010001111000000000000;
-            inf.has_cond = true;
-            field(inf, 25, 25);
-            field(inf, 22, 22);
-            field(inf, 11, 0);
-            break;
-        case SINGLE_DATA_TRANSFER:
-            inf.name = "single_data_transfer";
-            inf.format = 0b00000100000000000000000000000000;
-            inf.has_cond = true;
-            field(inf, 25, 0);
-            break;
-        case SINGLE_DATA_SWAP:
-            inf.name = "single_data_swap";
+        case SWP:
+            inf.name = "swp";
             inf.format = 0b00000001000000000000000010010000;
             inf.has_cond = true;
             field(inf, 22, 22); // B
             field(inf, 19, 12); // Rn, Rd
             field(inf, 3, 0); // Rm
             break;
-        case SWI:
+        case LDRH_STRH:
+            inf.name = "ldrh_strh";
+            inf.format = 0b00000000000000000000000010110000;
+            inf.has_cond = true;
+            field(inf, 24, 22); // P, U, I
+            field_when(inf, 24, 24, 1, 21, 21); // when P=1, W may be 0 or 1
+            field(inf, 20, 12); // L, Rn, Rd
+            field_when(inf, 22, 22, 1, 11, 8); // when I=1, immediate offset upper 4 bits
+            field(inf, 3, 0); // Rm or lower 4 bits of immediate offset
+            break;
+        case LDRSB_LDRSH:
+            inf.name = "ldrsb_ldrsh";
+            inf.format = 0b00000000000100000000000011010000;
+            inf.has_cond = true;
+            field(inf, 24, 22); // P, U, I
+            field_when(inf, 24, 24, 1, 21, 21); // when P=1, W may be 0 or 1
+            field(inf, 19, 12); // Rn, Rd
+            field_when(inf, 22, 22, 1, 11, 8); // when I=1, immediate offset upper 4 bits
+            field(inf, 5, 5); // LRDSB or LDRSH
+            field(inf, 3, 0); // Rm or lower 4 bits of immediate offset
+            break;
+        case MRS:
+            inf.name = "mrs";
+            inf.format = 0b00000001000011110000000000000000;
+            inf.has_cond = true;
+            field(inf, 15, 12); // Rd
+            break;
+        case MSR_reg: // 000'10.10 0000  MSR (register)
+            inf.name = "msr_reg";
+            inf.format = 0b00000001001000001111000000000000;
+            inf.has_cond = true;
+            field(inf, 19, 16); // f s x c
+            field(inf, 3, 0); // Rm
+            break;
+        case MSR_imm: // 001'10.10 ....
+            inf.name = "msr_imm";
+            inf.format = 0b00000011001000001111000000000000;
+            inf.has_cond = true;
+            field(inf, 19, 16); // f s x c
+            field(inf, 11, 8); // shift applied to imm
+            field(inf, 7, 0); // unsigned 8bit immediate
+            break;
+        case BX:
+            inf.name = "bx";
+            inf.format = 0b00000001001011111111111100010000;
+            inf.has_cond = true;
+            field(inf, 3, 0); // operand register
+            break;
+        case data_proc_immediate_shift: // 000'..... ...0  Data Processing (immediate shift)
+            inf.name = "data_proc_immediate_shift";
+            inf.format = 0b00000000000000000000000000000000; // I=0, R=0
+            inf.has_cond = true;
+            inf.is_data_processing = true;
+            field(inf, 24, 20); // opcode, S
+            field(inf, 19, 12); // Rn, Rd. special rules for some opcodes
+            field(inf, 11, 7); // shift amount because I=0 and R=0
+            field(inf, 6, 5); // shift type
+            field(inf, 3, 0); // Rm
+            break;
+        case data_proc_register_shift: // //000'..... 0..1  Data Processing (register shift)
+            inf.name = "data_proc_register_shift";
+            inf.format = 0b00000000000000000000000000010000;   // I=0, R=1
+            inf.has_cond = true;
+            inf.is_data_processing = true;
+            field(inf, 24, 20); // opcode, S
+            field(inf, 19, 12); // Rn, Rd. special rules for some opcodes
+            field(inf, 11, 8); // Rs. only lower 8 bits used
+            field(inf, 6, 5); // shift type
+            field(inf, 3, 0); // Rm
+            break;
+        /*case undefined_instruction: // 001'10.00
+            inf.name = "undefined";
+            inf.format = 0b000000110000*/
+        case data_processing_immediate:  // 001'..... ....
+            inf.name = "data_proc_immediate";
+            inf.format = 0b00000010000000000000000000000000;   // I=1
+            inf.has_cond = true;
+            inf.is_data_processing = true;
+            field(inf, 24, 20); // opcode, S
+            field(inf, 19, 12); // Rn, Rd. special rules for some opcodes
+            field(inf, 11, 8); // Is
+            field(inf, 7, 0); // nn
+            break;
+        case LDR_STR_immediate_offset: // //010'..... ....  LDR, STR (immediate offset)
+            inf.name = "ldr_str_immediate_offset";
+            inf.format = 0b00000100000000000000000000000000; // I=0
+            inf.has_cond = true;
+            field(inf, 24, 22); // P, U, B
+            field(inf, 21, 21); // T or W
+            field(inf, 20, 12); // L, Rn, Rd
+            field(inf, 11, 0); // immediate offset
+            break;
+        case LDR_STR_register_offset:
+            inf.name = "ldr_str_immediate_offset";
+            inf.format = 0b00000110000000000000000000000000; // I=1
+            inf.has_cond = true;
+            field(inf, 24, 12); // P, U, B, T/W, L, Rn, Rd
+            field(inf, 11, 5); // shift amount, shift type
+            field(inf, 3, 0); // Rm
+            break;
+        case LDM_STM: // 100'..... ....
+            inf.name = "ldm_stm";
+            inf.format = 0b00001000000000000000000000000000;
+            inf.has_cond = true;
+            field(inf, 24, 0); // all options
+            break;
+        case B_BL: // 101'..... ....
+            inf.name = "b_bl";
+            inf.format = 0b00001010000000000000000000000000;
+            inf.has_cond = true;
+            field(inf, 24, 24); // B or BL
+            field(inf, 23, 0); // offset
+            break;
+        case STC_LDC: // 110'..... ....
+            inf.name = "stc_ldc";
+            inf.format = 0b00001100000000000000000000000000;
+            inf.has_cond = true;
+            field(inf, 24, 0); // all options
+            break;
+        case CDP: // 111'0.... ...0
+            inf.name = "cdp";
+            inf.format = 0b00001110000000000000000000000000;
+            inf.has_cond = true;
+            field(inf, 23, 5);
+            field(inf, 3, 0);
+            break;
+        case MCR_MRC: // 111'0.... ...1
+            inf.name = "mcr_rc";
+            inf.format = 0b00001110000000000000000000010000;
+            field(inf, 23, 5);
+            field(inf, 3, 0);
+            break;
+        case SWI: // 111'1.... ....
             inf.name = "swi";
             inf.format = 0b00001111000000000000000000000000;
+            field(inf, 23, 0); // comment field, ignored by processor.
             inf.has_cond = true;
-            break;
-        case UNDEFINED:
-            inf.name = "undefined";
-            inf.format = 0b00000110000000000000000000010000;
-            field(inf, 24, 0); // PUSWL Rn register_list
             break;
         default:
             assert(1==0);
@@ -376,27 +446,56 @@ testarray tests;
 
 u32 opc_info::generate_opcode()
 {
+    bool pf = false;
+    if ((strcmp("data_proc_register_shift", name.c_str()) == 0)) {
+        pf = true;
+    }
     u32 out = format;
     u32 idx = 0;
-    u32 last_v = 0;
+    //u32 last_v = 0;
     for (auto &bf : bsfs) {
-        u32 v = sfc32(&rstate) & bf.mask;
-        if ((idx == 1) && (is_data_processing)) {
-            // S must be set to 1 for some opcodes
-            if ((last_v >= 8) && (last_v < 12)) {
-                v = 1;
+        u32 v = (sfc32(&rstate) & bf.mask) << bf.shift;
+        if (pf) printf("\nField bits mask: %08x shift:%d", bf.mask, bf.shift);
+        if (bf.is_if) {
+            u32 t = out & bf.which_mask;
+            if (bf.is_ne) {
+                if (t == bf.which_equals) v = 0;
             }
+            else if (t != bf.which_equals) v = 0;
         }
-        out |= v << bf.shift;
-        last_v = v;
+        out |= v;
         idx++;
     }
-    if (has_cond) {
-        u32 v = 15;
-        while (v == 15) {
-            v = sfc32(&rstate) & 15;
+    if (is_data_processing) {
+        u32 opcode = (out >> 21) & 15;
+        switch(opcode) {
+            case 0x0D: // MOV
+            case 0x0F: // MVN
+                out &= ~(15 << 16); // Clear bits 19-16
+                break;
+            case 0x0A: // CMP. CMP, CMN, TST, TEQ
+            case 0x0B: // CMN
+            case 0x08: // TST
+            case 0x09: // TEQ
+                // 0 *OR* 1 in bits 15-12
+                // S must be 1 also
+                u32 bit = 0b1111 * (sfc32(&rstate) & 1);
+                out &= ~(15 << 12); // clear bits 15-12
+                out |= (bit << 12); // set them again
+                out &= ~(1 << 20);
+                out |= (1 << 20);
+                break;
         }
-        out |= (v << 28);
+    }
+    if (has_cond) {
+        u32 c = sfc32(&rstate) & 15;
+        if (c == 0) {
+            u32 v = 15;
+            while (v == 15) {
+                v = sfc32(&rstate) & 15;
+            }
+            out |= (v << 28);
+        }
     }
     return out;
 }
@@ -451,7 +550,6 @@ static u32 write_state(u8* where, struct arm_test_state *state, u32 is_final)
     }
 
     W32(CPSR);
-    W32(SPSR);
     W32(SPSR_fiq);
     W32(SPSR_svc);
     W32(SPSR_abt);
@@ -469,7 +567,7 @@ static u32 write_state(u8* where, struct arm_test_state *state, u32 is_final)
 static u32 write_transactions(u8 *where, const struct armtest *test)
 {
     cW[M32](where, 4, TB_TRANSACTIONS);
-    cW[M32](where, 8, 4);
+    cW[M32](where, 8, test->transactions.size());
     u32 r = 12;
 #define W32(v) cW[M32](where, r, v); r += 4
     for (auto &t : test->transactions) {
@@ -478,6 +576,7 @@ static u32 write_transactions(u8 *where, const struct armtest *test)
         W32(t.addr);
         W32(t.data);
         W32(t.cycle);
+        W32(t.access);
     }
     cW[M32](where, 0, r);
 #undef W32
@@ -494,7 +593,10 @@ static u32 write_opcodes(u8* where, struct armtest *test)
     W32((u32)test->opcodes[2]);
     W32((u32)test->opcodes[3]);
     W32((u32)test->opcodes[4]);
+
+    W32(test->base_addr);
 #undef W32
+
     cW[M32](where, 0, r);
     return r;
 }
@@ -503,12 +605,17 @@ void write_tests(opc_info &inf)
 {
     char fpath[250];
     char rp[250];
-    sprintf(rp, "ARM7TDMI/v1/%s.bin", inf.name.c_str());
+    sprintf(rp, "ARM7TDMI/v1/%s.json.bin", inf.name.c_str());
     construct_path(fpath, rp);
     printf("\nFILE PATH %s", fpath);
     remove(fpath);
 
     FILE *f = fopen(fpath, "wb");
+
+    u32 r = 0xD33DBAE0;
+    fwrite(&r, 1, sizeof(r), f);
+    r = NUM_TESTS;
+    fwrite(&r, 1, sizeof(r), f);
 
     u32 outbuf_idx = 0;
     for (u32 tnum = 0; tnum < NUM_TESTS; tnum++) {
@@ -562,11 +669,9 @@ static void generate_opc_tests(yo &core, opc_info &inf) {
         test_struct.test->transactions.clear();
         test_struct.cycle_num = 0;
 
-        // Run CPU 2 cycles!
-        for (u32 i = 0; i < 2; i++) {
-            core.core.cpu.Run();
-            test_struct.cycle_num++;
-        }
+        // Run CPU 1 cycle!
+        core.core.cpu.Run();
+        test_struct.cycle_num++;
 
         // Now fill out rest of test
         test.state_end.copy_from_arm(core.core.cpu);
@@ -583,7 +688,8 @@ void generate_tests()
 
     //snprintf(tests.outpath, 500, "/Users/dave/dev/ARM7TDMI/v1/%s.json.bin", gti.name);
     fflush(stdout);
-    for (u32 opc_num = 1; opc_num < opc::total; opc_num++) {
+    for (u32 opc_num = 1; opc_num <= opc::total; opc_num++) {
+    //u32 opc_num = opc::classes::kinds::SINGLE_DATA_SWAP;
         opc_info inf;
         fill_opc_info(opc_num, inf);
         printf("\nGenerate tests %s", inf.name.c_str());
