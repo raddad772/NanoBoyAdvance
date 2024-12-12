@@ -15,7 +15,7 @@
 #define THUMB_NOP 0x46c0      // mov r8, r8
 #include <string.h>
 
-#define NUM_TESTS 2000
+#define NUM_TESTS 20000
 #define ALLOC_BUF_SIZE (10 * 1024 * 1024)
 
 struct RW {

@@ -184,10 +184,17 @@ void arm_test_state::randomize(bool thumb) {
 void arm_test_state::copy_to_arm(nba::core::arm::ARM7TDMI &cpu)
 {
     cpu.Reset();
-    if (cpu.state.cpsr.f.mode != nba::core::arm::Mode::MODE_USR)
-        cpu.SwitchMode(nba::core::arm::Mode::MODE_USR);
+    // tkaes new mode and compares to current mode... sets current mode to new mode.
+    cpu.SwitchMode(nba::core::arm::Mode::MODE_USR);
+    //cpu.state.cpsr.f.mode = nba::core::arm::Mode::MODE_USR;
     for (u32 i = 0; i < 16; i++) {
         cpu.state.reg[i] = r[i];
+        if (i < 5) {
+            cpu.state.bank[BANK_SVC][i] = 0x20 + i;
+            cpu.state.bank[BANK_ABT][i] = 0x30 + i;
+            cpu.state.bank[BANK_IRQ][i] = 0x40 + i;
+            cpu.state.bank[BANK_UND][i] = 0x50 + i;
+        }
         if (i < 2) { // 5 and 6
             cpu.state.bank[BANK_SVC][5+i] = r_svc[i];
             cpu.state.bank[BANK_ABT][5+i] = r_abt[i];
@@ -205,16 +212,17 @@ void arm_test_state::copy_to_arm(nba::core::arm::ARM7TDMI &cpu)
     cpu.state.spsr[BANK_FIQ].v = SPSR_fiq;
     cpu.pipe.opcode[0] = pipeline.opcode[0];
     cpu.pipe.opcode[1] = pipeline.opcode[1];
-    cpu.state.cpsr.v = CPSR;
     if ((CPSR & 0x1F) != 16)
         cpu.SwitchModeOther((nba::core::arm::Mode)CPSR & 0x1F);
+    cpu.state.cpsr.v = CPSR;
 }
 
 void arm_test_state::copy_from_arm(nba::core::arm::ARM7TDMI &cpu)
 {
     CPSR = cpu.state.cpsr.v;
-    if (cpu.state.cpsr.f.mode != nba::core::arm::Mode::MODE_USR)
+    if (cpu.state.cpsr.f.mode != nba::core::arm::Mode::MODE_USR) {
         cpu.SwitchMode(nba::core::arm::Mode::MODE_USR);
+    }
 
     SPSR_svc = cpu.state.spsr[BANK_SVC].v;
     SPSR_abt = cpu.state.spsr[BANK_ABT].v;
@@ -236,6 +244,7 @@ void arm_test_state::copy_from_arm(nba::core::arm::ARM7TDMI &cpu)
             r_fiq[i] = cpu.state.bank[BANK_FIQ][i];
         }
     }
+    cpu.SwitchMode(cpu.state.cpsr.f.mode);
 }
 
 
@@ -455,7 +464,6 @@ u32 opc_info::generate_opcode()
     //u32 last_v = 0;
     for (auto &bf : bsfs) {
         u32 v = (sfc32(&rstate) & bf.mask) << bf.shift;
-        if (pf) printf("\nField bits mask: %08x shift:%d", bf.mask, bf.shift);
         if (bf.is_if) {
             u32 t = out & bf.which_mask;
             if (bf.is_ne) {
