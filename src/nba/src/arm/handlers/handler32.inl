@@ -344,7 +344,7 @@ void ARM_SingleDataSwap(u32 instruction) {
 
   if (byte) {
     tmp = ReadByte(GetReg(base), Access::Nonsequential);
-    WriteByte(GetReg(base), (u8)GetReg(src), Access::Nonsequential | Access::Lock);
+    WriteByte(GetReg(base), (u8)GetReg(src) & 0xFF, Access::Nonsequential | Access::Lock);
   } else {
     tmp = ReadWordRotate(GetReg(base), Access::Nonsequential);
     WriteWord(GetReg(base), GetReg(src), Access::Nonsequential | Access::Lock);
@@ -452,8 +452,10 @@ void ARM_HalfwordSignedTransfer(u32 instruction) {
       }
       break;
   }
-
-  if (load && dst == 15) {
+  if ((writeback || !pre) && (base == 15)) {
+      ReloadPipeline32();
+  }
+  else if (load && dst == 15) {
     ReloadPipeline32();
   }
 }
@@ -477,6 +479,8 @@ void ARM_BranchAndLink(u32 instruction) {
 template <bool immediate, bool pre, bool add, bool byte, bool writeback, bool load>
 void ARM_SingleDataTransfer(u32 instruction) {
   u32 offset;
+  // Rn base, Rd source
+  // if base == 15, don't do Rd writeback
 
   int dst  = (instruction >> 12) & 0xF;
   int base = (instruction >> 16) & 0xF;
@@ -516,11 +520,15 @@ void ARM_SingleDataTransfer(u32 instruction) {
 
     if constexpr (writeback || !pre) {
       SetReg(base, GetReg(base) + offset);
+      if ((base == 15) && (dst != 15)) {
+          ReloadPipeline32();
+          }
     }
 
     bus.Idle();
 
     SetReg(dst, value);
+    if (dst == 15) ReloadPipeline32();
   } else {
     if constexpr (byte) {
       WriteByte(address, (u8)GetReg(dst), Access::Nonsequential);
@@ -530,12 +538,10 @@ void ARM_SingleDataTransfer(u32 instruction) {
 
     if constexpr (writeback || !pre) {
       SetReg(base, GetReg(base) + offset);
+      if (base == 15) ReloadPipeline32();
     }
   }
 
-  if (load && dst == 15) {
-    ReloadPipeline32();
-  }
 }
 
 template <bool _pre, bool add, bool user_mode, bool writeback, bool load>
@@ -628,7 +634,7 @@ void ARM_BlockDataTransfer(u32 instruction) {
 
     access_type = Access::Sequential;
   }
-
+    bool flush_pipe = false;
   if constexpr (load) {
     bus.Idle();
 
@@ -647,17 +653,20 @@ void ARM_BlockDataTransfer(u32 instruction) {
         SwitchMode(spsr.f.mode);
         state.cpsr.v = spsr.v;
       }
+      flush_pipe = true;
 
-      if (state.cpsr.f.thumb) {
-        ReloadPipeline16();
-      } else {
-        ReloadPipeline32();
-      }
     }
   }
 
   if (switch_mode) {
     SwitchMode(mode);
+  }
+  if ((writeback && (base == 15)) || flush_pipe) {
+      if (state.cpsr.f.thumb) {
+          ReloadPipeline16();
+      } else {
+          ReloadPipeline32();
+      }
   }
 }
 

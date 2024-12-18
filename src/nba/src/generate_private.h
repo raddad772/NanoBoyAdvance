@@ -91,9 +91,11 @@ struct opc_info {
     bool is_data_processing;
     bool is_thumb;
     bool has_shifter;
+    bool is_msr_immediate;
+    bool is_msr_reg;
     std::vector<bsf> bsfs;
 
-    void clear() { is_thumb = false; is_data_processing = false; format = 0; mask = 0; has_cond = has_shifter = false; num = opc::classes::NONE,  bsfs.clear(); }
+    void clear() { is_msr_immediate= false; is_msr_reg = false; is_thumb = false; is_data_processing = false; format = 0; mask = 0; has_cond = has_shifter = false; num = opc::classes::NONE,  bsfs.clear(); }
     u32 generate_opcode();
 };
 
@@ -112,6 +114,7 @@ struct armtest {
     bool is_thumb;
     u32 opcodes[5];
     u32 base_addr;
+    bool is_msr;
 };
 
 enum ARM_modes {

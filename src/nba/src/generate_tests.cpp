@@ -47,6 +47,18 @@ struct generating_test_struct {
 
 static struct generating_test_struct test_struct = {};
 
+static u32 rnd_modes[8] = { mode_usr, mode_fiq, mode_irq, mode_svc, mode_abt, mode_und, mode_sys };
+
+static u32 get_cpsr(bool thumb) {
+    u32 r = sfc32(&rstate);
+    u32 flags = r & 0b11110000000000000000000011000000;
+    flags |= rnd_modes[r & 7];
+    if (thumb) flags |= 0b100000;
+    // bit 4 is forced to 1 on ARM7TDMI
+    flags |= 0b10000;
+    return flags;
+}
+
 u32 bus_read(u32 addr, u32 sz, int access)
 {
     enum Access {
@@ -99,6 +111,7 @@ u32 bus_read(u32 addr, u32 sz, int access)
         }
         //printf("\nREAD NORMAL!");
         v = sfc32(&rstate) & mask;
+        if (test_struct.test->is_msr) v = get_cpsr(false) & mask;
     }
 
     t.data = v;
@@ -124,18 +137,6 @@ void bus_write(u32 addr, u32 val, u32 sz, int access)
 
 u32 (*bus_rd_ptr)(u32, u32, int) = bus_read;
 void (*bus_wt_ptr)(u32, u32, u32, int) = bus_write;
-
-static u32 rnd_modes[8] = { mode_usr, mode_fiq, mode_irq, mode_svc, mode_abt, mode_und, mode_sys };
-
-static u32 get_cpsr(bool thumb) {
-    u32 r = sfc32(&rstate);
-    u32 flags = r & 0b11110000000000000000000011000000;
-    flags |= rnd_modes[r & 7];
-    if (thumb) flags |= 0b100000;
-    // bit 4 is forced to 1 on ARM7TDMI
-    flags |= 0b10000;
-    return flags;
-}
 
 void arm_test_state::print(const char *w)
 {
@@ -341,6 +342,7 @@ static void fill_opc_info(u32 num, opc_info &inf)
             inf.has_cond = true;
             field(inf, 19, 16); // f s x c
             field(inf, 3, 0); // Rm
+            inf.is_msr_reg = true;
             break;
         case MSR_imm: // 001'10.10 ....
             inf.name = "msr_imm";
@@ -349,6 +351,7 @@ static void fill_opc_info(u32 num, opc_info &inf)
             field(inf, 19, 16); // f s x c
             field(inf, 11, 8); // shift applied to imm
             field(inf, 7, 0); // unsigned 8bit immediate
+            inf.is_msr_immediate = true;
             break;
         case BX:
             inf.name = "bx";
@@ -401,7 +404,7 @@ static void fill_opc_info(u32 num, opc_info &inf)
             field(inf, 11, 0); // immediate offset
             break;
         case LDR_STR_register_offset:
-            inf.name = "ldr_str_immediate_offset";
+            inf.name = "ldr_str_register_offset";
             inf.format = 0b00000110000000000000000000000000; // I=1
             inf.has_cond = true;
             field(inf, 24, 12); // P, U, B, T/W, L, Rn, Rd
@@ -473,6 +476,16 @@ u32 opc_info::generate_opcode()
         }
         out |= v;
         idx++;
+    }
+    if (is_msr_immediate) {
+        u32 do_user = (out >> 16) & 1;
+        if (do_user) {
+            u32 shift = 0;
+            u32 v = get_cpsr(false) & 0xFF;
+            out &= 0xFFFFF000;
+            out |= v & 0xFF;
+        }
+
     }
     if (is_data_processing) {
         u32 opcode = (out >> 21) & 15;
@@ -647,6 +660,7 @@ static void generate_opc_tests(yo &core, opc_info &inf) {
     sfc32_seed(inf.name.c_str(), &rstate);
     for (u32 testnum = 0; testnum < NUM_TESTS; testnum++) {
         armtest &test = tests.test[testnum];
+        test.is_msr = inf.is_msr_immediate;
         test.state_begin.randomize(inf.is_thumb);
 
         u32 opcode = inf.generate_opcode();
