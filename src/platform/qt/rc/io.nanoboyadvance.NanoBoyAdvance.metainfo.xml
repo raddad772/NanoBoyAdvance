@@ -102,7 +102,7 @@ It aims to be as accurate as possible, while also offering enhancements such as 
           <li>PPU: use the 6-th green channel bit during blending</li>
           <li>PPU: round the blending result to the nearest integer</li>
           <li>ARM: fix a minor timing oversight in ARM mode</li>
-          <li>ARM: SWP and SWPB should lock the bus (no DMA interleave is possible)</li>
+          <li>ARM: ARM_SWP and SWPB should lock the bus (no DMA interleave is possible)</li>
           <li>ARM: do not force-align mis-aligned PC in ARM mode</li>
           <li>Bus: allow the CPU to execute idle cycles in parallel to DMA</li>
           <li>Bus: more accurately emulate disabling the prefetch buffer</li>

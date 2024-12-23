@@ -35,7 +35,7 @@ using nba::core::arm::BANK_UND;
 
 typedef signed long long i64;
 
-#define OUTBUF_SZ (20 * 1024 * 1024)
+#define OUTBUF_SZ (50 * 1024 * 1024)
 static u8 outbuf[OUTBUF_SZ];
 
 struct generating_test_struct {
@@ -79,42 +79,33 @@ u32 bus_read(u32 addr, u32 sz, int access)
     armtest *tst = test_struct.test;
     u32 v;
 
+    u32 mask;
+    switch(sz) {
+        case 1:
+            mask = 0xFF;
+            break;
+        case 2:
+            mask = 0xFFFF;
+            break;
+        case 4:
+            mask = 0xFFFFFFFF;
+            break;
+        default:
+            assert(1==2);
+    }
     if (access & Access::Code) {
         t.tkind = transaction::TK_READ_INS;
-        i64 addrdiff = ((i64)addr - (i64)tst->base_addr);
-        if ((addrdiff >= 0) && (addrdiff <= 12)) {
-            // opcode fetch in-order!
-            //printf("\nIN-ORDER FETCH! %08x", (u32)(addrdiff >> 2));
-            v = tst->opcodes[addrdiff >> 2];
-        }
-        else {
-            // out-of-order!
-            //printf("\nOUT OF ORDER FETCH!");
-            v = tst->opcodes[3];
-        }
+        if (addr == tst->base_addr) v = tst->opcodes[0];
+        else v = addr;
     } else {
         // Generate an 8, 16, or 32-bit value!
         t.tkind = transaction::TK_READ_DATA;
-        u32 mask;
-        switch(sz) {
-            case 1:
-                mask = 0xFF;
-                break;
-            case 2:
-                mask = 0xFFFF;
-                break;
-            case 4:
-                mask = 0xFFFFFFFF;
-                break;
-            default:
-                assert(1==2);
-        }
         //printf("\nREAD NORMAL!");
-        v = sfc32(&rstate) & mask;
+        v = sfc32(&rstate);
         if (test_struct.test->is_msr) v = get_cpsr(false) & mask;
     }
 
-    t.data = v;
+    t.data = v & mask;
     t.access = access;
 
     test_struct.test->transactions.push_back(t);
@@ -125,9 +116,12 @@ u32 bus_read(u32 addr, u32 sz, int access)
 void bus_write(u32 addr, u32 val, u32 sz, int access)
 {
     //printf("\nWRITE ADDR %08x sz:%d val:%08x", addr, sz, val);
+    u32 mask = 0xFFFFFFFF;
+    if (sz == 2) mask = 0xFFFF;
+    if (sz == 1) mask = 0xFF;
     transaction t;
     t.addr = addr;
-    t.data = val;
+    t.data = val & mask;
     t.size = sz;
     t.tkind = transaction::TK_WRITE_DATA;
     t.cycle = global_steps;
@@ -211,10 +205,10 @@ void arm_test_state::copy_to_arm(nba::core::arm::ARM7TDMI &cpu)
     cpu.state.spsr[BANK_IRQ].v = SPSR_irq;
     cpu.state.spsr[BANK_UND].v = SPSR_und;
     cpu.state.spsr[BANK_FIQ].v = SPSR_fiq;
-    cpu.pipe.opcode[0] = pipeline.opcode[0];
-    cpu.pipe.opcode[1] = pipeline.opcode[1];
     if ((CPSR & 0x1F) != 16)
         cpu.SwitchModeOther((nba::core::arm::Mode)CPSR & 0x1F);
+    cpu.pipe.opcode[0] = pipeline.opcode[0];
+    cpu.pipe.opcode[1] = pipeline.opcode[1];
     cpu.state.cpsr.v = CPSR;
 }
 
@@ -259,7 +253,14 @@ static void field(opc_info &inf, u32 hi_bit, u32 lo_bit)
 {
     u32 num_bits = (hi_bit - lo_bit) + 1;
     u32 mask = (1 << num_bits) - 1;
-    inf.bsfs.push_back({mask, lo_bit, false, false, 0, 0});
+    inf.bsfs.push_back({mask, lo_bit, false, false, 0, 0, -1});
+}
+
+static void field_limit(opc_info &inf, u32 hi_bit, u32 lo_bit, u32 limit)
+{
+    u32 num_bits = (hi_bit - lo_bit) + 1;
+    u32 mask = (1 << num_bits) - 1;
+    inf.bsfs.push_back({mask, lo_bit, false, false, 0, 0, (int)limit});
 }
 
 static void field_when(opc_info &inf, u32 which_hi, u32 which_lo, u32 equals, u32 hi_bit, u32 lo_bit)
@@ -269,7 +270,7 @@ static void field_when(opc_info &inf, u32 which_hi, u32 which_lo, u32 equals, u3
 
     u32 which_mask = (1 << ((which_hi - which_lo) + 1)) - 1;
     u32 which_equals = equals << which_lo;
-    inf.bsfs.push_back({mask, lo_bit, true, true, which_mask, which_equals});
+    inf.bsfs.push_back({mask, lo_bit, true, true, which_mask, which_equals, -1});
 }
 
 static void field_when_not(opc_info &inf, u32 which_hi, u32 which_lo, u32 equals, u32 hi_bit, u32 lo_bit)
@@ -279,7 +280,7 @@ static void field_when_not(opc_info &inf, u32 which_hi, u32 which_lo, u32 equals
 
     u32 which_mask = (1 << ((which_hi - which_lo) + 1)) - 1;
     u32 which_equals = equals << which_lo;
-    inf.bsfs.push_back({mask, lo_bit, true, false, which_mask, which_equals});
+    inf.bsfs.push_back({mask, lo_bit, true, false, which_mask, which_equals, -1});
 }
 
 static void fill_opc_info(u32 num, opc_info &inf)
@@ -287,30 +288,30 @@ static void fill_opc_info(u32 num, opc_info &inf)
     inf.clear();
     using namespace opc::classes;
     switch(num) {
-        case MUL_MLA: // // 000'000.. 1001  MUL, MLA
-            inf.name = "mul_mla";
+        case ARM_MUL_MLA: // // 000'000.. 1001  MUL, MLA
+            inf.name = "arm_mul_mla";
             inf.format = 0b00000000000000000000000010010000;
             inf.has_cond = true;
             field(inf, 21,8); // S, Rd, Rn, Rs
             field(inf, 3, 0); // Rm
             break;
-        case MULL_MLAL:
-            inf.name = "mull_mlal";
+        case ARM_MULL_MLAL:
+            inf.name = "arm_mull_mlal";
             inf.format = 0b00000000100000000000000010010000;
             inf.has_cond = true;
             field(inf, 21,8); // S, Rd, Rn, Rs
             field(inf, 3, 0); // Rm
             break;
-        case SWP:
-            inf.name = "swp";
+        case ARM_SWP:
+            inf.name = "arm_swp";
             inf.format = 0b00000001000000000000000010010000;
             inf.has_cond = true;
             field(inf, 22, 22); // B
             field(inf, 19, 12); // Rn, Rd
             field(inf, 3, 0); // Rm
             break;
-        case LDRH_STRH:
-            inf.name = "ldrh_strh";
+        case ARM_LDRH_STRH:
+            inf.name = "arm_ldrh_strh";
             inf.format = 0b00000000000000000000000010110000;
             inf.has_cond = true;
             field(inf, 24, 22); // P, U, I
@@ -319,8 +320,8 @@ static void fill_opc_info(u32 num, opc_info &inf)
             field_when(inf, 22, 22, 1, 11, 8); // when I=1, immediate offset upper 4 bits
             field(inf, 3, 0); // Rm or lower 4 bits of immediate offset
             break;
-        case LDRSB_LDRSH:
-            inf.name = "ldrsb_ldrsh";
+        case ARM_LDRSB_LDRSH:
+            inf.name = "arm_ldrsb_ldrsh";
             inf.format = 0b00000000000100000000000011010000;
             inf.has_cond = true;
             field(inf, 24, 22); // P, U, I
@@ -330,22 +331,22 @@ static void fill_opc_info(u32 num, opc_info &inf)
             field(inf, 5, 5); // LRDSB or LDRSH
             field(inf, 3, 0); // Rm or lower 4 bits of immediate offset
             break;
-        case MRS:
-            inf.name = "mrs";
+        case ARM_MRS:
+            inf.name = "arm_mrs";
             inf.format = 0b00000001000011110000000000000000;
             inf.has_cond = true;
             field(inf, 15, 12); // Rd
             break;
-        case MSR_reg: // 000'10.10 0000  MSR (register)
-            inf.name = "msr_reg";
+        case ARM_MSR_reg: // 000'10.10 0000  MSR (register)
+            inf.name = "arm_msr_reg";
             inf.format = 0b00000001001000001111000000000000;
             inf.has_cond = true;
             field(inf, 19, 16); // f s x c
             field(inf, 3, 0); // Rm
             inf.is_msr_reg = true;
             break;
-        case MSR_imm: // 001'10.10 ....
-            inf.name = "msr_imm";
+        case ARM_MSR_imm: // 001'10.10 ....
+            inf.name = "arm_msr_imm";
             inf.format = 0b00000011001000001111000000000000;
             inf.has_cond = true;
             field(inf, 19, 16); // f s x c
@@ -353,14 +354,14 @@ static void fill_opc_info(u32 num, opc_info &inf)
             field(inf, 7, 0); // unsigned 8bit immediate
             inf.is_msr_immediate = true;
             break;
-        case BX:
-            inf.name = "bx";
+        case ARM_BX:
+            inf.name = "arm_bx";
             inf.format = 0b00000001001011111111111100010000;
             inf.has_cond = true;
             field(inf, 3, 0); // operand register
             break;
-        case data_proc_immediate_shift: // 000'..... ...0  Data Processing (immediate shift)
-            inf.name = "data_proc_immediate_shift";
+        case ARM_data_proc_immediate_shift: // 000'..... ...0  Data Processing (immediate shift)
+            inf.name = "arm_data_proc_immediate_shift";
             inf.format = 0b00000000000000000000000000000000; // I=0, R=0
             inf.has_cond = true;
             inf.is_data_processing = true;
@@ -370,8 +371,8 @@ static void fill_opc_info(u32 num, opc_info &inf)
             field(inf, 6, 5); // shift type
             field(inf, 3, 0); // Rm
             break;
-        case data_proc_register_shift: // //000'..... 0..1  Data Processing (register shift)
-            inf.name = "data_proc_register_shift";
+        case ARM_data_proc_register_shift: // //000'..... 0..1  Data Processing (register shift)
+            inf.name = "arm_data_proc_register_shift";
             inf.format = 0b00000000000000000000000000010000;   // I=0, R=1
             inf.has_cond = true;
             inf.is_data_processing = true;
@@ -384,8 +385,8 @@ static void fill_opc_info(u32 num, opc_info &inf)
         /*case undefined_instruction: // 001'10.00
             inf.name = "undefined";
             inf.format = 0b000000110000*/
-        case data_processing_immediate:  // 001'..... ....
-            inf.name = "data_proc_immediate";
+        case ARM_data_proc_immediate:  // 001'..... ....
+            inf.name = "arm_data_proc_immediate";
             inf.format = 0b00000010000000000000000000000000;   // I=1
             inf.has_cond = true;
             inf.is_data_processing = true;
@@ -394,8 +395,8 @@ static void fill_opc_info(u32 num, opc_info &inf)
             field(inf, 11, 8); // Is
             field(inf, 7, 0); // nn
             break;
-        case LDR_STR_immediate_offset: // //010'..... ....  LDR, STR (immediate offset)
-            inf.name = "ldr_str_immediate_offset";
+        case ARM_LDR_STR_immediate_offset: // //010'..... ....  LDR, STR (immediate offset)
+            inf.name = "arm_ldr_str_immediate_offset";
             inf.format = 0b00000100000000000000000000000000; // I=0
             inf.has_cond = true;
             field(inf, 24, 22); // P, U, B
@@ -403,51 +404,213 @@ static void fill_opc_info(u32 num, opc_info &inf)
             field(inf, 20, 12); // L, Rn, Rd
             field(inf, 11, 0); // immediate offset
             break;
-        case LDR_STR_register_offset:
-            inf.name = "ldr_str_register_offset";
+        case ARM_LDR_STR_register_offset:
+            inf.name = "arm_ldr_str_register_offset";
             inf.format = 0b00000110000000000000000000000000; // I=1
             inf.has_cond = true;
             field(inf, 24, 12); // P, U, B, T/W, L, Rn, Rd
             field(inf, 11, 5); // shift amount, shift type
             field(inf, 3, 0); // Rm
             break;
-        case LDM_STM: // 100'..... ....
-            inf.name = "ldm_stm";
+        case ARM_LDM_STM: // 100'..... ....
+            inf.name = "arm_ldm_stm";
             inf.format = 0b00001000000000000000000000000000;
             inf.has_cond = true;
             field(inf, 24, 0); // all options
             break;
-        case B_BL: // 101'..... ....
-            inf.name = "b_bl";
+        case ARM_B_BL: // 101'..... ....
+            inf.name = "arm_b_bl";
             inf.format = 0b00001010000000000000000000000000;
             inf.has_cond = true;
             field(inf, 24, 24); // B or BL
             field(inf, 23, 0); // offset
             break;
-        case STC_LDC: // 110'..... ....
-            inf.name = "stc_ldc";
+        case ARM_STD_LDC: // 110'..... ....
+            inf.name = "arm_stc_ldc";
             inf.format = 0b00001100000000000000000000000000;
             inf.has_cond = true;
             field(inf, 24, 0); // all options
             break;
-        case CDP: // 111'0.... ...0
-            inf.name = "cdp";
+        case ARM_CDP: // 111'0.... ...0
+            inf.name = "arm_cdp";
             inf.format = 0b00001110000000000000000000000000;
             inf.has_cond = true;
             field(inf, 23, 5);
             field(inf, 3, 0);
             break;
-        case MCR_MRC: // 111'0.... ...1
-            inf.name = "mcr_rc";
+        case ARM_MCR_MRC: // 111'0.... ...1
+            inf.name = "arm_mcr_mrc";
             inf.format = 0b00001110000000000000000000010000;
             field(inf, 23, 5);
             field(inf, 3, 0);
             break;
-        case SWI: // 111'1.... ....
-            inf.name = "swi";
+        case ARM_SWI: // 111'1.... ....
+            inf.name = "arm_swi";
             inf.format = 0b00001111000000000000000000000000;
             field(inf, 23, 0); // comment field, ignored by processor.
             inf.has_cond = true;
+            break;
+        case THUMB_ADD_SUB: // 00011.....
+            inf.name = "thumb_add_sub";
+            inf.is_thumb = true;
+            inf.format = 0b0001100000000000;
+            field(inf, 10, 0); // all stuff?
+            break;
+        case THUMB_LSL_LSR_ASR: // 000....
+            inf.name = "thumb_lsl_lsr_asr";
+            inf.is_thumb = true;
+            inf.format = 0b0000000000000000;
+            field_limit(inf, 12, 11, 2);
+            field(inf, 10, 0); // all stuff?
+            break;
+        case THUMB_MOV_CMP_ADD_SUB:
+            inf.name = "thumb_mov_cmp_add_sub";
+            inf.is_thumb = true;
+            inf.format = 0b0010000000000000;
+            field(inf, 12, 0); // all stuff?
+            break;
+        case THUMB_data_proc:
+            inf.name = "thumb_data_proc";
+            inf.is_thumb = true;
+            inf.format = 0b0100000000000000;
+            field(inf, 9, 0); // all stuff?
+            break;
+        case THUMB_BX:
+            inf.name = "thumb_bx";
+            inf.is_thumb = true;
+            inf.format = 0b0100011100000000;
+            field(inf, 7, 0); // all stuff?
+            break;
+        case THUMB_ADD_CMP_MOV_hi:
+            inf.name = "thumb_add_cmp_mov_hi";
+            inf.is_thumb = true;
+            inf.format = 0b0100010000000000;
+            field_limit(inf, 9, 8, 2); // all stuff?
+            field(inf, 7, 0);
+            break;
+        case THUMB_LDR_PC_relative:
+            inf.name = "thumb_ldr_pc_rel";
+            inf.is_thumb = true;
+            inf.format = 0b0100100000000000;
+            field(inf, 10, 0); // all stuff?
+            break;
+        case THUMB_LDRH_STRH_reg_offset:
+            inf.name = "thumb_ldrh_strh_reg_offset";
+            inf.is_thumb = true;
+            inf.format = 0b0101001000000000;
+            field(inf, 11, 11); // LDRH/STRH
+            field(inf, 8, 0); // all stuff?
+            break;
+        case THUMB_LDRSH_LDRSB_reg_offset:
+            inf.name = "thumb_ldrsh_ldrsb_reg_offset";
+            inf.is_thumb = true;
+            inf.format = 0b0101011000000000;
+            field(inf, 11, 11); // LDSB/LDSH
+            field(inf, 8, 0); // all stuff?
+            break;
+        case THUMB_LDR_STR_reg_offset:
+            inf.name = "thumb_ldr_str_reg_offset";
+            inf.is_thumb = true;
+            inf.format = 0b0101000000000000;
+            field(inf, 11, 11); // LDR/STR
+            field(inf, 8, 0); // all stuff?
+            break;
+        case THUMB_LDRB_STRB_reg_offset:
+            inf.name = "thumb_ldrsb_strb_reg_offset";
+            inf.is_thumb = true;
+            inf.format = 0b0101010000000000;
+            field(inf, 11, 11); // LDRSB/STRB
+            field(inf, 8, 0); // all stuff?
+            break;
+        case THUMB_LDR_STR_imm_offset:
+            inf.name = "thumb_ldr_str_imm_offset";
+            inf.is_thumb = true;
+            inf.format = 0b0110000000000000;
+            field(inf, 11, 11); // LDR/STR
+            field(inf, 10, 0); // all stuff?
+            break;
+        case THUMB_LDRB_STRB_imm_offset:
+            inf.name = "thumb_ldrb_strb_imm_offset";
+            inf.is_thumb = true;
+            inf.format = 0b0111000000000000;
+            field(inf, 11, 11); // STRB/LDRB
+            field(inf, 10, 0); // all stuff?
+            break;
+        case THUMB_LDRH_STRH_imm_offset:
+            inf.name = "thumb_ldrh_strh_imm_offset";
+            inf.is_thumb = true;
+            inf.format = 0b1000000000000000;
+            field(inf, 11, 11); // STRH/LDRH
+            field(inf, 10, 0); // all stuff?
+            break;
+        case THUMB_LDR_STR_SP_relative:
+            inf.name = "thumb_ldr_str_sp_rel";
+            inf.is_thumb = true;
+            inf.format = 0b1001000000000000;
+            field(inf, 11, 11); // STR/LDR
+            field(inf, 10, 0); // all stuff?
+            break;
+        case THUMB_ADD_SP_or_PC:
+            inf.name = "thumb_add_sp_or_pc";
+            inf.is_thumb = true;
+            inf.format = 0b1010000000000000;
+            field(inf, 11, 11); // PC/SP
+            field(inf, 10, 0); // all stuff?
+            break;
+        case THUMB_ADD_SUB_SP:
+            inf.name = "thumb_add_sub_sp";
+            inf.is_thumb = true;
+            inf.format = 0b1011000000000000;
+            field(inf, 7, 0); // all stuff
+            break;
+        case THUMB_PUSH_POP:
+            inf.name = "thumb_push_pop";
+            inf.is_thumb = true;
+            inf.format = 0b1011010000000000;
+            field(inf, 8, 0); // all stuff
+            break;
+        case THUMB_LDM_STM:
+            inf.name = "thumb_ldm_stm";
+            inf.is_thumb = true;
+            inf.format = 0b1100000000000000;
+            field(inf, 11, 0); // all stuff
+            break;
+        case THUMB_SWI:
+            inf.name = "thumb_swi";
+            inf.is_thumb = true;
+            inf.format = 0b1101111100000000;
+            field(inf, 7, 0); // comment field
+            break;
+        case THUMB_UNDEFINED_BCC:
+            inf.name = "thumb_undefined_bcc";
+            inf.is_thumb = true;
+            inf.format = 0b1101111000000000;
+            field(inf, 7, 0); // bad instruction!
+            break;
+        case THUMB_BCC:
+            inf.name = "thumb_bcc";
+            inf.is_thumb = true;
+            inf.format = 0b1101000000000000;
+            field_limit(inf, 11, 8, 13);
+            field(inf, 7, 0);
+            break;
+        case THUMB_B:
+            inf.name = "thumb_b";
+            inf.is_thumb = true;
+            inf.format = 0b1110000000000000;
+            field(inf, 10, 0);
+            break;
+        case THUMB_BL_BLX_prefix:
+            inf.name = "thumb_bl_blx_prefix";
+            inf.is_thumb = true;
+            inf.format = 0b1111000000000000;
+            field(inf, 10, 0);
+            break;
+        case THUMB_BL_suffix:
+            inf.name = "thumb_bl_suffix";
+            inf.is_thumb = true;
+            inf.format = 0b1111100000000000;
+            field(inf, 10, 0); // lower bits
             break;
         default:
             assert(1==0);
@@ -458,15 +621,16 @@ testarray tests;
 
 u32 opc_info::generate_opcode()
 {
-    bool pf = false;
-    if ((strcmp("data_proc_register_shift", name.c_str()) == 0)) {
-        pf = true;
-    }
     u32 out = format;
     u32 idx = 0;
-    //u32 last_v = 0;
     for (auto &bf : bsfs) {
-        u32 v = (sfc32(&rstate) & bf.mask) << bf.shift;
+        u32 v = sfc32(&rstate) & bf.mask;
+        if (bf.limit > 0) {
+            while (v > bf.limit) {
+                v = sfc32(&rstate) & bf.mask;
+            }
+        }
+        v <<= bf.shift;
         if (bf.is_if) {
             u32 t = out & bf.which_mask;
             if (bf.is_ne) {
@@ -477,45 +641,47 @@ u32 opc_info::generate_opcode()
         out |= v;
         idx++;
     }
-    if (is_msr_immediate) {
-        u32 do_user = (out >> 16) & 1;
-        if (do_user) {
-            u32 shift = 0;
-            u32 v = get_cpsr(false) & 0xFF;
-            out &= 0xFFFFF000;
-            out |= v & 0xFF;
-        }
-
-    }
-    if (is_data_processing) {
-        u32 opcode = (out >> 21) & 15;
-        switch(opcode) {
-            case 0x0D: // MOV
-            case 0x0F: // MVN
-                out &= ~(15 << 16); // Clear bits 19-16
-                break;
-            case 0x0A: // CMP. CMP, CMN, TST, TEQ
-            case 0x0B: // CMN
-            case 0x08: // TST
-            case 0x09: // TEQ
-                // 0 *OR* 1 in bits 15-12
-                // S must be 1 also
-                u32 bit = 0b1111 * (sfc32(&rstate) & 1);
-                out &= ~(15 << 12); // clear bits 15-12
-                out |= (bit << 12); // set them again
-                out &= ~(1 << 20);
-                out |= (1 << 20);
-                break;
-        }
-    }
-    if (has_cond) {
-        u32 c = sfc32(&rstate) & 15;
-        if (c == 0) {
-            u32 v = 15;
-            while (v == 15) {
-                v = sfc32(&rstate) & 15;
+    if (!is_thumb) {
+        if (is_msr_immediate) {
+            u32 do_user = (out >> 16) & 1;
+            if (do_user) {
+                u32 shift = 0;
+                u32 v = get_cpsr(false) & 0xFF;
+                out &= 0xFFFFF000;
+                out |= v & 0xFF;
             }
-            out |= (v << 28);
+
+        }
+        if (is_data_processing) {
+            u32 opcode = (out >> 21) & 15;
+            switch (opcode) {
+                case 0x0D: // MOV
+                case 0x0F: // MVN
+                    out &= ~(15 << 16); // Clear bits 19-16
+                    break;
+                case 0x0A: // CMP. CMP, CMN, TST, TEQ
+                case 0x0B: // CMN
+                case 0x08: // TST
+                case 0x09: // TEQ
+                    // 0 *OR* 1 in bits 15-12
+                    // S must be 1 also
+                    u32 bit = 0b1111 * (sfc32(&rstate) & 1);
+                    out &= ~(15 << 12); // clear bits 15-12
+                    out |= (bit << 12); // set them again
+                    out &= ~(1 << 20);
+                    out |= (1 << 20);
+                    break;
+            }
+        }
+        if (has_cond) {
+            u32 c = sfc32(&rstate) & 15;
+            if (c == 0) {
+                u32 v = 15;
+                while (v == 15) {
+                    v = sfc32(&rstate) & 15;
+                }
+                out |= (v << 28);
+            }
         }
     }
     return out;
@@ -610,10 +776,6 @@ static u32 write_opcodes(u8* where, struct armtest *test)
     u32 r = 8;
 #define W32(val) cW[M32](where, r, val); r += 4
     W32((u32)test->opcodes[0]);
-    W32((u32)test->opcodes[1]);
-    W32((u32)test->opcodes[2]);
-    W32((u32)test->opcodes[3]);
-    W32((u32)test->opcodes[4]);
 
     W32(test->base_addr);
 #undef W32
@@ -660,6 +822,7 @@ static void generate_opc_tests(yo &core, opc_info &inf) {
     sfc32_seed(inf.name.c_str(), &rstate);
     for (u32 testnum = 0; testnum < NUM_TESTS; testnum++) {
         armtest &test = tests.test[testnum];
+        test.is_thumb = inf.is_thumb;
         test.is_msr = inf.is_msr_immediate;
         test.state_begin.randomize(inf.is_thumb);
 
@@ -667,18 +830,10 @@ static void generate_opc_tests(yo &core, opc_info &inf) {
 
         test.opcodes[0] = opcode;
 
-        if (test.is_thumb) {
-            assert(1 == 0);
-        } else {
-            test.opcodes[1] = ARM32_ADC_R1_R2; // first opcode after test
-            test.opcodes[2] = ARM32_ADC_R2_R3; // branch taken to correct
-            test.opcodes[3] = ARM32_ADC_R3_R4; // final prefetch
-            test.opcodes[4] = ARM32_ADC_R8_R9; // unknown opcode location
-        }
         test.state_begin.pipeline.opcode[0] = test.opcodes[0];
-        test.state_begin.pipeline.opcode[1] = test.opcodes[1];
         test.base_addr = test.state_begin.r[15];
         test.state_begin.r[15] += (test.is_thumb ? 4 : 8);
+        test.state_begin.pipeline.opcode[1] = test.state_begin.r[15];
         test.state_begin.copy_to_arm(core.core.cpu);
         global_steps = 0;
 
@@ -691,7 +846,7 @@ static void generate_opc_tests(yo &core, opc_info &inf) {
         test_struct.test->transactions.clear();
         test_struct.cycle_num = 0;
 
-        // Run CPU 1 cycle!
+        // Run CPU 1 instruction!
         core.core.cpu.Run();
         test_struct.cycle_num++;
 
