@@ -271,6 +271,7 @@ public:
     pipe.opcode[1] = bus.ReadHalf((state.r15 + 2) & ~1, Access::Code | Access::Sequential);
     pipe.access = Access::Code | Access::Sequential;
     state.r15 += 4;
+    state.r15 &= ~1;
 
     latch_irq_disable = state.cpsr.f.mask_irq;
   }
@@ -280,6 +281,7 @@ public:
     pipe.opcode[1] = bus.ReadWord((state.r15 + 4) & ~1, Access::Code | Access::Sequential);
     pipe.access = Access::Code | Access::Sequential;
     state.r15 += 8;
+    state.r15 &= ~1;
 
     latch_irq_disable = state.cpsr.f.mask_irq;
   }
