@@ -276,8 +276,8 @@ public:
   }
 
   void ReloadPipeline32() {
-    pipe.opcode[0] = bus.ReadWord((state.r15 + 0) & ~3, Access::Code | Access::Nonsequential);
-    pipe.opcode[1] = bus.ReadWord((state.r15 + 4) & ~3, Access::Code | Access::Sequential);
+    pipe.opcode[0] = bus.ReadWord((state.r15 + 0) & ~1, Access::Code | Access::Nonsequential);
+    pipe.opcode[1] = bus.ReadWord((state.r15 + 4) & ~1, Access::Code | Access::Sequential);
     pipe.access = Access::Code | Access::Sequential;
     state.r15 += 8;
 
