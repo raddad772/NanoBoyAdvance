@@ -70,7 +70,7 @@ struct ARM7TDMI {
       (this->*s_opcode_lut_16[instruction >> 6])(instruction);
     } else {
       pipe.opcode[0] = pipe.opcode[1];
-      pipe.opcode[1] = ReadWord(state.r15 & ~3, pipe.access);
+      pipe.opcode[1] = ReadWord(state.r15 & ~1, pipe.access);
 
       if(CheckCondition(static_cast<Condition>(instruction >> 28))) {
         int hash = ((instruction >> 16) & 0xFF0) |
