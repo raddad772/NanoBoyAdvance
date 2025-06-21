@@ -41,7 +41,7 @@ u32 ReadHalfSigned(u32 address, int access) {
   u32 value;
 
   if (address & 1) {
-    value = bus.ReadHalf(address, access) & 0xFF;
+    value = (bus.ReadHalf(address, access) >> 8) & 0xFF;
     if (value & 0x80) {
       value |= 0xFFFFFF00;
     }

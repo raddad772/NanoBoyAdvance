@@ -152,6 +152,10 @@ void arm_test_state::randomize(bool thumb) {
             r_fiq[i] = sfc32(&rstate);
         }
         r[i] = sfc32(&rstate);
+        if (i == 15) {
+            if (thumb) r[i] &= ~1;
+            else r[i] &= ~3;
+        }
     }
     if (thumb) r[15] &= 0xFFFFFFFE;
     else r[15] &= 0xFFFFFFFC;
@@ -166,6 +170,12 @@ void arm_test_state::randomize(bool thumb) {
     SPSR_abt = get_cpsr(thumb);
     SPSR_irq = get_cpsr(thumb);
     SPSR_und = get_cpsr(thumb);
+#define ARM7P_nonsequential 0
+#define ARM7P_sequential 1
+#define ARM7P_code 2
+
+    access = sfc32(&rstate) & 1;
+    access |= 2;
 
     for (u32 i = 0; i < 2; i++) {
         if (thumb)
@@ -210,10 +220,12 @@ void arm_test_state::copy_to_arm(nba::core::arm::ARM7TDMI &cpu)
     cpu.pipe.opcode[0] = pipeline.opcode[0];
     cpu.pipe.opcode[1] = pipeline.opcode[1];
     cpu.state.cpsr.v = CPSR;
+    cpu.pipe.access = access;
 }
 
 void arm_test_state::copy_from_arm(nba::core::arm::ARM7TDMI &cpu)
 {
+    access = cpu.pipe.access;
     CPSR = cpu.state.cpsr.v;
     if (cpu.state.cpsr.f.mode != nba::core::arm::Mode::MODE_USR) {
         cpu.SwitchMode(nba::core::arm::Mode::MODE_USR);
@@ -299,7 +311,7 @@ static void fill_opc_info(u32 num, opc_info &inf)
             inf.name = "arm_mull_mlal";
             inf.format = 0b00000000100000000000000010010000;
             inf.has_cond = true;
-            field(inf, 21,8); // S, Rd, Rn, Rs
+            field(inf, 22, 8); // S, accumulate, Rd, Rn, Rs
             field(inf, 3, 0); // Rm
             break;
         case ARM_SWP:
@@ -335,12 +347,14 @@ static void fill_opc_info(u32 num, opc_info &inf)
             inf.name = "arm_mrs";
             inf.format = 0b00000001000011110000000000000000;
             inf.has_cond = true;
+            field(inf, 22, 22); // Use CPSR/SPSR
             field(inf, 15, 12); // Rd
             break;
         case ARM_MSR_reg: // 000'10.10 0000  MSR (register)
             inf.name = "arm_msr_reg";
             inf.format = 0b00000001001000001111000000000000;
             inf.has_cond = true;
+            field(inf, 22, 22); // PSR
             field(inf, 19, 16); // f s x c
             field(inf, 3, 0); // Rm
             inf.is_msr_reg = true;
@@ -349,6 +363,7 @@ static void fill_opc_info(u32 num, opc_info &inf)
             inf.name = "arm_msr_imm";
             inf.format = 0b00000011001000001111000000000000;
             inf.has_cond = true;
+            field(inf, 22, 22); // which PSR
             field(inf, 19, 16); // f s x c
             field(inf, 11, 8); // shift applied to imm
             field(inf, 7, 0); // unsigned 8bit immediate
@@ -365,10 +380,12 @@ static void fill_opc_info(u32 num, opc_info &inf)
             inf.format = 0b00000000000000000000000000000000; // I=0, R=0
             inf.has_cond = true;
             inf.is_data_processing = true;
+            // bit 25 I=0
             field(inf, 24, 20); // opcode, S
             field(inf, 19, 12); // Rn, Rd. special rules for some opcodes
             field(inf, 11, 7); // shift amount because I=0 and R=0
             field(inf, 6, 5); // shift type
+            // bit 4 R = 0 for this encoding
             field(inf, 3, 0); // Rm
             break;
         case ARM_data_proc_register_shift: // //000'..... 0..1  Data Processing (register shift)
@@ -379,7 +396,9 @@ static void fill_opc_info(u32 num, opc_info &inf)
             field(inf, 24, 20); // opcode, S
             field(inf, 19, 12); // Rn, Rd. special rules for some opcodes
             field(inf, 11, 8); // Rs. only lower 8 bits used
+            // bit 7 =0 for this encoding
             field(inf, 6, 5); // shift type
+            //bit 4 R=1 for this encoding
             field(inf, 3, 0); // Rm
             break;
         /*case undefined_instruction: // 001'10.00
@@ -399,6 +418,7 @@ static void fill_opc_info(u32 num, opc_info &inf)
             inf.name = "arm_ldr_str_immediate_offset";
             inf.format = 0b00000100000000000000000000000000; // I=0
             inf.has_cond = true;
+            // bit 25 I=0
             field(inf, 24, 22); // P, U, B
             field(inf, 21, 21); // T or W
             field(inf, 20, 12); // L, Rn, Rd
@@ -408,8 +428,10 @@ static void fill_opc_info(u32 num, opc_info &inf)
             inf.name = "arm_ldr_str_register_offset";
             inf.format = 0b00000110000000000000000000000000; // I=1
             inf.has_cond = true;
+            // bit 25 I=1
             field(inf, 24, 12); // P, U, B, T/W, L, Rn, Rd
             field(inf, 11, 5); // shift amount, shift type
+            // bit 4=0
             field(inf, 3, 0); // Rm
             break;
         case ARM_LDM_STM: // 100'..... ....
@@ -567,6 +589,7 @@ static void fill_opc_info(u32 num, opc_info &inf)
             inf.name = "thumb_push_pop";
             inf.is_thumb = true;
             inf.format = 0b1011010000000000;
+            field(inf, 11, 11); // PUSH/POP discriminator
             field(inf, 8, 0); // all stuff
             break;
         case THUMB_LDM_STM:
@@ -744,6 +767,7 @@ static u32 write_state(u8* where, struct arm_test_state *state, u32 is_final)
     W32(SPSR_und);
     W32(pipeline.opcode[0]);
     W32(pipeline.opcode[1]);
+    W32(access);
 
 #undef W32
     // Write size of block
@@ -818,8 +842,15 @@ void write_tests(opc_info &inf)
     fclose(f);
 }
 
+static char seedstock[300];
+char *xseed(const char *input)
+{
+    seedstock[0] = 0;
+    snprintf(seedstock, sizeof(seedstock), "%s123", input);
+}
+
 static void generate_opc_tests(yo &core, opc_info &inf) {
-    sfc32_seed(inf.name.c_str(), &rstate);
+    sfc32_seed(xseed(inf.name.c_str()), &rstate);
     for (u32 testnum = 0; testnum < NUM_TESTS; testnum++) {
         armtest &test = tests.test[testnum];
         test.is_thumb = inf.is_thumb;
@@ -835,6 +866,7 @@ static void generate_opc_tests(yo &core, opc_info &inf) {
         test.state_begin.r[15] += (test.is_thumb ? 4 : 8);
         test.state_begin.pipeline.opcode[1] = test.state_begin.r[15];
         test.state_begin.copy_to_arm(core.core.cpu);
+
         global_steps = 0;
 
         // Make sure our CPU isn't interrupted...

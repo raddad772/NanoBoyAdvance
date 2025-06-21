@@ -171,102 +171,102 @@ auto DMA::Run() -> int {
 }
 
 void DMA::RunChannel() {
-  auto& channel = channels[active_dma_id];
-  int dst_modify;
-  int src_modify;
-  auto size = channel.size;
+    auto &channel = channels[active_dma_id];
+    int dst_modify;
+    int src_modify;
+    auto size = channel.size;
 
-  if(channel.is_fifo_dma) {
-    size = Channel::Size::Word;
-    dst_modify = 0;
-  } else {
-    dst_modify = g_dma_dst_modify[size][channel.dst_cntl];
-  }
-  src_modify = g_dma_src_modify[size][channel.src_cntl];
-
-  bool did_access_rom = false;
-
-  while(channel.latch.length != 0) {
-    if(should_reenter_transfer_loop) {
-      should_reenter_transfer_loop = false;
-      return;
+    if (channel.is_fifo_dma) {
+        size = Channel::Size::Word;
+        dst_modify = 0;
+    } else {
+        dst_modify = g_dma_dst_modify[size][channel.dst_cntl];
     }
+    src_modify = g_dma_src_modify[size][channel.src_cntl];
 
-    auto src_addr = channel.latch.src_addr;
-    auto dst_addr = channel.latch.dst_addr;
+    bool did_access_rom = false;
 
-    auto access_src = Bus::Access::Sequential | Bus::Access::Dma;
-    auto access_dst = Bus::Access::Sequential | Bus::Access::Dma;
-
-    if(!did_access_rom) {
-      if(src_addr >= 0x08000000) {
-        access_src = Bus::Access::Nonsequential | Bus::Access::Dma;
-        did_access_rom = true;
-      } else if(dst_addr >= 0x08000000) {
-        access_dst = Bus::Access::Nonsequential | Bus::Access::Dma;
-        did_access_rom = true;
-      }
-    }
-
-    if(size == Channel::Half) {
-      u16 value;
-
-      if(likely(src_addr >= 0x02000000)) {
-        value = bus.ReadHalf(src_addr, access_src);
-        channel.latch.bus = (value << 16) | value;
-        latch = channel.latch.bus;
-      } else {
-        if(dst_addr & 2) {
-          value = channel.latch.bus >> 16;
-        } else {
-          value = channel.latch.bus;
+    while (channel.latch.length != 0) {
+        if (should_reenter_transfer_loop) {
+            should_reenter_transfer_loop = false;
+            return;
         }
-        bus.Step(1);
-      }
 
-      bus.WriteHalf(dst_addr, value, access_dst);
+        auto src_addr = channel.latch.src_addr;
+        auto dst_addr = channel.latch.dst_addr;
+
+        auto access_src = Bus::Access::Sequential | Bus::Access::Dma;
+        auto access_dst = Bus::Access::Sequential | Bus::Access::Dma;
+
+        if (!did_access_rom) {
+            if (src_addr >= 0x08000000) {
+                access_src = Bus::Access::Nonsequential | Bus::Access::Dma;
+                did_access_rom = true;
+            } else if (dst_addr >= 0x08000000) {
+                access_dst = Bus::Access::Nonsequential | Bus::Access::Dma;
+                did_access_rom = true;
+            }
+        }
+
+        if (size == Channel::Half) {
+            u16 value;
+
+            if (likely(src_addr >= 0x02000000)) {
+                value = bus.ReadHalf(src_addr, access_src);
+                channel.latch.bus = (value << 16) | value;
+                latch = channel.latch.bus;
+            } else {
+                if (dst_addr & 2) {
+                    value = channel.latch.bus >> 16;
+                } else {
+                    value = channel.latch.bus;
+                }
+                bus.Step(1);
+            }
+
+            bus.WriteHalf(dst_addr, value, access_dst);
+        } else {
+            if (likely(src_addr >= 0x02000000)) {
+                channel.latch.bus = bus.ReadWord(src_addr, access_src);
+                latch = channel.latch.bus;
+            } else {
+                bus.Step(1);
+            }
+
+            bus.WriteWord(dst_addr, channel.latch.bus, access_dst);
+        }
+
+        channel.latch.src_addr += src_modify;
+        channel.latch.dst_addr += dst_modify;
+        channel.latch.length--;
+    }
+
+    runnable_set.set(channel.id, false);
+
+    if (channel.interrupt) {
+        irq.Raise(IRQ::Source::DMA, channel.id);
+    }
+
+    if (channel.repeat && channel.time != Channel::Immediate) {
+        if (channel.is_fifo_dma) {
+            channel.latch.length = 4;
+        } else {
+            channel.latch.length = channel.length & g_dma_len_mask[channel.id];
+            if (channel.latch.length == 0) {
+                channel.latch.length = g_dma_len_mask[channel.id] + 1;
+            }
+        }
+
+        if (channel.dst_cntl == Channel::Reload && !channel.is_fifo_dma) {
+            auto mask = channel.size == Channel::Word ? ~3 : ~1;
+            channel.latch.dst_addr = channel.dst_addr & mask;
+        }
     } else {
-      if(likely(src_addr >= 0x02000000)) {
-        channel.latch.bus = bus.ReadWord(src_addr, access_src);
-        latch = channel.latch.bus;
-      } else {
-        bus.Step(1);
-      }
-
-      bus.WriteWord(dst_addr, channel.latch.bus, access_dst);
+        RemoveChannelFromDMASets(channel);
+        channel.enable = false;
     }
 
-    channel.latch.src_addr += src_modify;
-    channel.latch.dst_addr += dst_modify;
-    channel.latch.length--;
-  }
-
-  runnable_set.set(channel.id, false);
-
-  if(channel.interrupt) {
-    irq.Raise(IRQ::Source::DMA, channel.id);
-  }
-
-  if(channel.repeat && channel.time != Channel::Immediate) {
-    if(channel.is_fifo_dma) {
-      channel.latch.length = 4;
-    } else {
-      channel.latch.length = channel.length & g_dma_len_mask[channel.id];
-      if(channel.latch.length == 0) {
-        channel.latch.length = g_dma_len_mask[channel.id] + 1;
-      }
-    }
-
-    if(channel.dst_cntl == Channel::Reload && !channel.is_fifo_dma) {
-      auto mask = channel.size == Channel::Word ? ~3 : ~1;
-      channel.latch.dst_addr = channel.dst_addr & mask;
-    }
-  } else {
-    RemoveChannelFromDMASets(channel);
-    channel.enable = false;
-  }
-
-  SelectNextDMA();
+    SelectNextDMA();
 }
 
 auto DMA::Read(int chan_id, int offset) -> u8 {

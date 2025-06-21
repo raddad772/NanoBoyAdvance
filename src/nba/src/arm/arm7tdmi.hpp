@@ -65,12 +65,12 @@ struct ARM7TDMI {
 
     if(state.cpsr.f.thumb) {
       pipe.opcode[0] = pipe.opcode[1];
-      pipe.opcode[1] = ReadHalf(state.r15, pipe.access);
+      pipe.opcode[1] = ReadHalf(state.r15 & ~1, pipe.access);
 
       (this->*s_opcode_lut_16[instruction >> 6])(instruction);
     } else {
       pipe.opcode[0] = pipe.opcode[1];
-      pipe.opcode[1] = ReadWord(state.r15, pipe.access);
+      pipe.opcode[1] = ReadWord(state.r15 & ~3, pipe.access);
 
       if(CheckCondition(static_cast<Condition>(instruction >> 28))) {
         int hash = ((instruction >> 16) & 0xFF0) |
@@ -267,8 +267,8 @@ public:
   }
 
   void ReloadPipeline16() {
-    pipe.opcode[0] = bus.ReadHalf(state.r15 + 0, Access::Code | Access::Nonsequential);
-    pipe.opcode[1] = bus.ReadHalf(state.r15 + 2, Access::Code | Access::Sequential);
+    pipe.opcode[0] = bus.ReadHalf((state.r15 + 0) & ~1, Access::Code | Access::Nonsequential);
+    pipe.opcode[1] = bus.ReadHalf((state.r15 + 2) & ~1, Access::Code | Access::Sequential);
     pipe.access = Access::Code | Access::Sequential;
     state.r15 += 4;
 
@@ -276,8 +276,8 @@ public:
   }
 
   void ReloadPipeline32() {
-    pipe.opcode[0] = bus.ReadWord(state.r15 + 0, Access::Code | Access::Nonsequential);
-    pipe.opcode[1] = bus.ReadWord(state.r15 + 4, Access::Code | Access::Sequential);
+    pipe.opcode[0] = bus.ReadWord((state.r15 + 0) & ~3, Access::Code | Access::Nonsequential);
+    pipe.opcode[1] = bus.ReadWord((state.r15 + 4) & ~3, Access::Code | Access::Sequential);
     pipe.access = Access::Code | Access::Sequential;
     state.r15 += 8;
 

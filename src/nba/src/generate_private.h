@@ -20,7 +20,7 @@
 #define THUMB_ADC_R6_R7 THUMB_ADC(6,7,7)
 #include <string.h>
 
-#define NUM_TESTS 20000
+#define NUM_TESTS 50000
 #define ALLOC_BUF_SIZE (10 * 1024 * 1024)
 
 struct RW {
@@ -40,6 +40,7 @@ struct arm_test_state {
     u32 r_und[2];
     u32 CPSR;
     u32 SPSR_fiq, SPSR_svc, SPSR_abt, SPSR_irq, SPSR_und;
+    int access;
     struct {
         u32 opcode[2];
     } pipeline;
